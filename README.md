@@ -1,296 +1,227 @@
 <div align="center">
 
-# AEGIS HYPERVISOR
+# 🛡️ AEGIS
 
-### The Virtualization Foundation of PyxisOS
+### The hypervisor layer of PyxisOS
 
-**A custom x86_64 hypervisor for hardware-assisted virtualization, isolated execution environments, and the next generation of AI-native operating systems.**
+A from-scratch x86_64 hypervisor built on hardware-assisted virtualization (Intel VT-x / AMD-V),
+written to understand, and then own, the boundary between hardware and execution.
 
-*Built as an independent systems project within the PyxisOS ecosystem.*
+![Status](https://img.shields.io/badge/status-pre--implementation-orange?style=flat-square)
+![Arch](https://img.shields.io/badge/arch-x86__64-555555?style=flat-square)
+![Lang](https://img.shields.io/badge/lang-Rust%20%2B%20NASM%20(planned)-b7410e?style=flat-square)
+![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square)
+[![PyxisOS](https://img.shields.io/badge/part%20of-PyxisOS-e63946?style=flat-square)](https://github.com/obstinix/PyxisOS)
 
-<br>
-
-![Architecture](https://img.shields.io/badge/Architecture-x86__64-555555?style=flat-square)
-![Project](https://img.shields.io/badge/Project-Experimental-orange?style=flat-square)
-![Domain](https://img.shields.io/badge/Domain-Hardware%20Virtualization-blue?style=flat-square)
-![Ecosystem](https://img.shields.io/badge/Ecosystem-PyxisOS-e63946?style=flat-square)
+[Status](#status) · [Architecture](#architecture) · [How it works](#how-hardware-virtualization-works) · [Roadmap](#roadmap) · [Dev setup](#development-environment) · [References](#references)
 
 </div>
 
 ---
 
-## Overview
+> [!WARNING]
+> **Aegis has no working code yet.** This README documents the design and the plan.
+> Anything marked *planned* is a goal, not a capability. Do not rely on Aegis to isolate anything.
 
-**Aegis Hypervisor** is an experimental custom hypervisor project designed to explore the foundations of hardware-assisted virtualization, execution isolation, and low-level resource management.
+## Status
 
-Developed as part of the broader **PyxisOS** ecosystem, Aegis aims to provide a dedicated virtualization layer that can eventually support isolated workloads, virtual machines, and controlled execution environments.
+| Area                         | State           |
+| ---------------------------- | --------------- |
+| Architecture & design docs   | 🟡 In progress  |
+| Build system / toolchain     | ⚪ Not started  |
+| VMX / SVM capability checks  | ⚪ Not started  |
+| VMX operation (VMXON)        | ⚪ Not started  |
+| First guest (VMLAUNCH)       | ⚪ Not started  |
+| EPT / NPT memory isolation   | ⚪ Not started  |
+| Lunar Core integration       | ⚪ Not started  |
 
-Rather than treating virtualization as an external utility, Aegis explores how it can become a foundational component of an operating system designed around intelligent automation and adaptable computing.
+This table is the source of truth. A row only changes when the matching code and test land in `main`.
 
-The project focuses on understanding and engineering the mechanisms beneath virtualization: processor execution modes, privilege separation, memory virtualization, virtual machine lifecycle management, and hardware-assisted isolation.
+## What Aegis is
 
-Aegis is an independent engineering project, with its own source code, architecture, development roadmap, and validation process.
+Aegis is the virtualization component of **PyxisOS Track B**, the from-scratch kernel and hypervisor track.
+It sits next to **Lunar Core** (the Rust kernel) and is responsible for one thing: running guest code
+under hardware-enforced isolation, with every VM entry, VM exit, and memory mapping under explicit control.
 
-> **Project status:** Experimental. Features are implemented and considered available only when supported by the corresponding source code and tests.
-
-## Vision
-
-Aegis is being developed around four core principles:
-
-* **Isolation by design** — Establish boundaries between the hypervisor and virtualized workloads.
-* **Hardware-assisted execution** — Investigate processor virtualization extensions and their role in efficient virtual machine execution.
-* **Explicit resource management** — Develop controlled mechanisms for managing virtual CPU, memory, and device resources.
-* **Native ecosystem integration** — Establish a foundation for future interoperability with PyxisOS and its system-level components.
-
-The long-term objective is to build a transparent, extensible virtualization foundation rather than simply wrap an existing hypervisor with a new interface.
+It is not a wrapper around KVM, Xen, or Hyper-V. The point is to build each mechanism directly against
+the processor manuals, so every layer is understood rather than inherited.
 
 ## Architecture
 
-Aegis is intended to evolve toward a layered architecture that separates hardware-specific mechanisms, virtualization primitives, and higher-level management.
-
 ```text
-┌───────────────────────────────────────────────┐
-│                   PyxisOS                     │
-│          AI-Native Operating System           │
-├───────────────────────────────────────────────┤
-│             Virtualization Management         │
-│        VM Lifecycle · Configuration · IPC    │
-├───────────────────────────────────────────────┤
-│                Aegis Hypervisor               │
-│                                               │
-│  ┌─────────────┐  ┌────────────────────────┐  │
-│  │ Virtual CPU │  │ Memory Virtualization │  │
-│  ├─────────────┤  ├────────────────────────┤  │
-│  │ VM Control  │  │ Isolation Boundaries  │  │
-│  └─────────────┘  └────────────────────────┘  │
-├───────────────────────────────────────────────┤
-│         Processor Virtualization Layer        │
-│       x86_64 · Intel VT-x / AMD SVM            │
-├───────────────────────────────────────────────┤
-│             Physical Hardware                 │
-│        CPU · RAM · Interrupts · Devices        │
-└───────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│                PyxisOS (Track B)                 │
+│        Lunar Core kernel · system services       │
+├──────────────────────────────────────────────────┤
+│              VM management interface             │
+│        create · run · pause · destroy · IPC      │
+├──────────────────────────────────────────────────┤
+│                      AEGIS                       │
+│  ┌───────────────────┐  ┌─────────────────────┐  │
+│  │ vCPU + VMCS/VMCB  │  │  EPT / NPT memory   │  │
+│  ├───────────────────┤  ├─────────────────────┤  │
+│  │ VM-exit dispatch  │  │  Resource ownership │  │
+│  └───────────────────┘  └─────────────────────┘  │
+├──────────────────────────────────────────────────┤
+│          Arch layer (VT-x  |  AMD-V/SVM)         │
+├──────────────────────────────────────────────────┤
+│       Hardware: CPU · RAM · interrupts · I/O     │
+└──────────────────────────────────────────────────┘
 ```
 
-*Conceptual architecture illustrating the intended direction of the project, not a claim that every layer is currently implemented.*
+*Target design. None of these layers exist in code yet.*
 
-### Architectural Components
+| Component          | Responsibility                                                                 |
+| ------------------ | ------------------------------------------------------------------------------ |
+| Arch layer         | Vendor-specific instructions (VMXON/VMLAUNCH vs VMRUN) behind one interface.   |
+| vCPU               | Guest register state, control structures (VMCS on Intel, VMCB on AMD).         |
+| VM-exit dispatch   | Decode exit reasons and route them to handlers (CPUID, HLT, I/O, EPT faults).  |
+| EPT / NPT memory   | Second-level address translation: guest-physical → host-physical, per VM.      |
+| Resource ownership | Track which VM owns which pages and vCPUs; guarantee clean teardown.           |
+| Management API     | The narrow interface Lunar Core uses to create and control VMs.                |
 
-| Component             | Responsibility                                                                    |
-| --------------------- | --------------------------------------------------------------------------------- |
-| Virtual CPU           | Explore virtual processor state and guest execution control.                      |
-| Memory Virtualization | Investigate guest memory mapping, address translation, and isolation.             |
-| VM Control            | Define virtual machine creation, execution, suspension, and teardown.             |
-| Hardware Abstraction  | Separate processor-specific mechanisms from higher-level virtualization logic.    |
-| Isolation Mechanisms  | Establish boundaries between execution contexts and manage privileged operations. |
-| PyxisOS Integration   | Define future interfaces between Aegis and the operating system.                  |
+## How hardware virtualization works
 
-These components describe the intended architecture. Their implementation status will depend on the current development milestones.
+The core loop Aegis is built around, shown for Intel VT-x (AMD SVM follows the same shape with `VMRUN` and a VMCB):
 
-## Core Research Areas
+```mermaid
+sequenceDiagram
+    participant H as Aegis (VMX root)
+    participant C as CPU
+    participant G as Guest (VMX non-root)
+    H->>C: Enable CR4.VMXE, VMXON
+    H->>C: VMCLEAR + VMPTRLD (select VMCS)
+    H->>C: VMWRITE host / guest / control fields
+    H->>C: VMLAUNCH
+    C->>G: Guest executes
+    G->>C: Sensitive instruction (e.g. CPUID)
+    C->>H: VM exit (exit reason 10)
+    H->>H: Emulate, advance guest RIP
+    H->>C: VMRESUME
+    C->>G: Guest continues
+```
 
-### 1. x86_64 Virtualization
+Everything else (memory isolation, interrupts, devices) is built by deciding *which* events cause exits and *how* the host handles them.
 
-Investigate the processor mechanisms required to execute virtualized workloads, including:
+## Design principles
 
-* Processor privilege levels and execution modes.
-* Hardware virtualization extensions.
-* Virtual machine entry and exit.
-* Guest and host processor state.
-* Exception and interrupt handling.
+- **Deny by default.** Guests get only the memory and exits Aegis explicitly configures.
+- **Verify every state transition.** Check VMX instruction status flags (CF/ZF) and VM-entry failure codes on every call; never assume success.
+- **Vendor code stays in the arch layer.** VT-x and SVM differences do not leak upward.
+- **Small trusted core.** Keep the code that runs in VMX root mode minimal and auditable.
+- **Honest status.** Docs describe what the code does, not what it will do.
 
-The initial focus is understanding the hardware execution model before building higher-level virtualization functionality.
+## Open design decisions
 
-### 2. Memory Virtualization
+These are unresolved and will be recorded as ADRs under `docs/architecture/` once decided.
 
-Explore the relationship between guest physical memory, host physical memory, and hardware-assisted address translation.
+| Decision                    | Options                                                          |
+| --------------------------- | ---------------------------------------------------------------- |
+| Hosting model               | Built into Lunar Core (kernel-hosted, KVM-style) vs. standalone bare-metal |
+| First vendor target         | Intel VT-x first vs. AMD SVM first                                |
+| Language split              | Rust `no_std` for logic, NASM for entry/exit stubs: exact boundary TBD |
+| Guest memory strategy       | Identity-mapped EPT first vs. allocate-on-demand from the start  |
+| First guest                 | Hand-written real-mode/long-mode stub vs. minimal existing kernel |
 
-Research areas include:
+## Roadmap
 
-* Guest memory allocation and mapping.
-* Second-level address translation.
-* Memory access boundaries.
-* Virtual machine memory ownership.
-* Validation of memory isolation.
+Each phase has a concrete exit criterion. A box is ticked only when that criterion is demonstrated and the test is in the repo.
 
-Intel EPT and AMD NPT are potential implementation paths, subject to hardware support and architectural decisions.
+- [ ] **Phase 0 · Foundations**
+  Repo layout, toolchain, CI, serial logging.
+  *Done when:* a bootable image builds reproducibly and prints to serial under QEMU.
 
-### 3. Virtual Machine Lifecycle
+- [ ] **Phase 1 · Capability detection**
+  Intel: `CPUID.1:ECX[5]` (VMX), `IA32_FEATURE_CONTROL` (MSR `0x3A`) lock/enable bits, `IA32_VMX_BASIC` (MSR `0x480`).
+  AMD: `CPUID.8000_0001h:ECX[2]` (SVM), `VM_CR.SVMDIS` (MSR `0xC0010114`).
+  *Done when:* Aegis reports support correctly on both a VMX-capable and a non-capable configuration.
 
-Develop a defined lifecycle for virtualized workloads, covering the eventual ability to:
+- [ ] **Phase 2 · Enter VMX operation**
+  Set `CR4.VMXE`, allocate the VMXON region with the correct revision ID, execute `VMXON` / `VMXOFF`.
+  *Done when:* VMX root operation is entered and exited cleanly, with status checked and logged.
 
-1. Initialize virtualization capabilities.
-2. Configure a guest execution environment.
-3. Allocate and configure guest resources.
-4. Enter and control guest execution.
-5. Handle virtualization exits and exceptional conditions.
-6. Shut down and release resources safely.
+- [ ] **Phase 3 · First guest**
+  Configure a VMCS and `VMLAUNCH` a tiny guest stub.
+  *Done when:* the guest executes `CPUID` and `HLT`, and the host logs exit reasons 10 and 12 and resumes or stops it correctly.
 
-Each lifecycle stage must be implemented and tested before it is treated as supported functionality.
+- [ ] **Phase 4 · Memory virtualization**
+  EPT page tables for guest-physical memory; handle EPT violations (exit reason 48).
+  *Done when:* a guest access outside its mapped memory traps to Aegis instead of touching host memory.
 
-### 4. Isolation and Reliability
+- [ ] **Phase 5 · Lifecycle & resources**
+  Create / run / pause / destroy; multiple VMs; virtual interrupt injection.
+  *Done when:* VMs can be created and destroyed repeatedly with no leaked pages, verified by an ownership audit.
 
-Virtualization introduces privileged execution paths and complex interactions between hardware and software.
+- [ ] **Phase 6 · Lunar Core integration**
+  Management interface between the kernel and Aegis.
+  *Done when:* Lunar Core starts and stops a guest through the API in an end-to-end test.
 
-Aegis will prioritize:
+AMD SVM support follows the same phases once the arch layer is stable on the first vendor.
 
-* Explicit validation of virtualization state.
-* Defensive handling of invalid configurations.
-* Controlled resource allocation and cleanup.
-* Separation of host and guest execution state.
-* Reproducible tests for virtualization primitives.
-* Clear documentation of security boundaries and limitations.
+## Development environment
 
-**Aegis should not be considered a security boundary suitable for production workloads until its isolation properties have been implemented, reviewed, and validated.**
+*Planned. Commands will be added once Phase 0 lands.*
 
-## Relationship with PyxisOS
+| Tool                     | Purpose                                                            |
+| ------------------------ | ------------------------------------------------------------------ |
+| Rust (nightly, `no_std`) | Hypervisor logic                                                   |
+| NASM                     | Entry points, VM-exit stubs, low-level glue                        |
+| QEMU + KVM               | Fast testing; needs nested virtualization and `-cpu host` to expose VMX to the guest |
+| Bochs (VMX-enabled build)| Slow but fully inspectable VMX emulation for debugging VMCS state  |
+| GDB                      | Attach via QEMU `-s -S`                                            |
 
-Aegis is a dedicated project within the broader PyxisOS engineering ecosystem.
+**WSL2 note:** testing a hypervisor inside QEMU requires nested virtualization to be enabled for the
+WSL2 VM, and `/dev/kvm` to be available inside WSL. Without it, fall back to Bochs.
 
-[**PyxisOS**](https://github.com/obstinix/PyxisOS) is an experimental AI-native x86_64 operating system project exploring system-level intelligence, automation, and custom infrastructure.
+### Planned layout
 
-Aegis addresses a complementary area: virtualization and the mechanisms required to manage isolated execution environments.
-
-The projects have distinct responsibilities:
-
-| Project          | Primary responsibility                                                  |
-| ---------------- | ----------------------------------------------------------------------- |
-| PyxisOS          | Operating system, system services, and AI-native computing environment. |
-| Aegis Hypervisor | Hardware virtualization research and hypervisor development.            |
-
-Future integration may involve defined interfaces for virtualization management, workload execution, and resource coordination.
-
-Such integration will depend on the maturity of both projects and the compatibility of their respective architectures.
-
-## Development Roadmap
-
-The roadmap describes intended milestones rather than a declaration that these capabilities are already available.
-
-* [ ] **Phase 1 — Foundations**
-
-  * Establish repository structure and development conventions.
-  * Document the target execution model and supported hardware assumptions.
-  * Define the hypervisor architecture and implementation language.
-  * Establish reproducible build and test procedures.
-
-* [ ] **Phase 2 — Hardware Bring-Up**
-
-  * Investigate processor virtualization capabilities.
-  * Establish controlled initialization and capability detection.
-  * Develop initial low-level virtualization primitives.
-  * Validate behavior in an emulator or supported test environment.
-
-* [ ] **Phase 3 — Virtualization Core**
-
-  * Implement the selected virtualization control mechanism.
-  * Establish guest CPU state management.
-  * Develop initial guest memory mapping.
-  * Handle virtualization exits and exceptional conditions.
-
-* [ ] **Phase 4 — Guest Execution**
-
-  * Establish a minimal guest execution environment.
-  * Develop virtual machine lifecycle management.
-  * Validate guest and host state transitions.
-  * Expand automated testing and failure handling.
-
-* [ ] **Phase 5 — Resource Management**
-
-  * Refine memory ownership and resource cleanup.
-  * Investigate virtual interrupt handling.
-  * Explore virtual device interfaces where required.
-  * Improve diagnostics and execution observability.
-
-* [ ] **Phase 6 — PyxisOS Integration**
-
-  * Define integration boundaries.
-  * Establish a compatible management interface.
-  * Evaluate guest workload management.
-  * Validate integration through reproducible end-to-end tests.
-
-Milestones should be marked complete only when supported by implementation, tests, and documented verification results.
-
-## Technology and Hardware
-
-Aegis targets the x86_64 virtualization domain.
-
-The final implementation stack and minimum hardware requirements should be documented as the corresponding components mature.
-
-| Area                      | Direction                                                                |
-| ------------------------- | ------------------------------------------------------------------------ |
-| Processor architecture    | x86_64                                                                   |
-| Virtualization mechanisms | Intel VT-x/EPT or AMD SVM/NPT, depending on the selected implementation  |
-| Execution environment     | Bare-metal or emulator-based testing, as supported                       |
-| Development focus         | Low-level systems programming and hardware virtualization                |
-| Integration target        | PyxisOS                                                                  |
-| Validation                | Build checks, automated tests, and controlled virtualization experiments |
-
-Intel VT-x and AMD SVM are alternative hardware virtualization technologies; support for either must be established by the implementation rather than inferred from the project description.
-
-## Building and Testing
-
-Build instructions will be documented once the repository's actual build system, dependencies, and executable targets are established.
-
-For reproducible development, the project should document:
-
-* Required compiler and toolchain versions.
-* Build configuration and supported targets.
-* Emulator or hardware prerequisites.
-* Commands for running tests.
-* Expected output for verified milestones.
-* Known limitations and unsupported configurations.
-
-Do not assume that a successful compilation demonstrates that the hypervisor can initialize hardware or execute a guest. Those are separate validation stages.
+```text
+Aegis/
+├── arch/
+│   ├── vmx/          # Intel VT-x: VMXON, VMCS, exit handling
+│   └── svm/          # AMD SVM: VMRUN, VMCB
+├── core/             # vCPU, VM lifecycle, exit dispatch
+├── mm/               # EPT / NPT, page ownership
+├── guests/           # minimal test guests
+├── tests/
+└── docs/
+    └── architecture/ # ADRs and design notes
+```
 
 ## Contributing
 
-Contributions should improve the correctness, reliability, clarity, or testability of the virtualization implementation.
+Aegis is currently a solo learning-driven project, but issues and discussion are welcome.
 
-Areas of interest include:
+1. Read the [status table](#status) and open design decisions first.
+2. Use [Conventional Commits](https://www.conventionalcommits.org/) (`feat(vmx): …`, `fix(ept): …`, `docs: …`).
+3. Every change that affects behavior needs a reproducible test or validation steps.
+4. Cite the manual section (Intel SDM / AMD APM) for any architectural behavior you rely on.
 
-* x86_64 architecture research.
-* Hardware virtualization and processor state management.
-* Memory virtualization and address translation.
-* Low-level debugging and emulator-based testing.
-* Isolation, error handling, and resource management.
-* Architecture documentation and reproducible test cases.
+## Non-goals and security
 
-### Contribution Guidelines
+- Aegis is a research and learning hypervisor, **not** a production isolation boundary.
+- No compatibility with existing VM image formats or management tools is planned.
+- Security properties will be claimed only after they are implemented, tested, and documented.
+  Until then, treat every guest as able to reach the host.
 
-1. Review the existing architecture and implementation before proposing changes.
-2. Keep changes focused and document relevant design decisions.
-3. Include tests or reproducible validation steps where applicable.
-4. Distinguish verified functionality from experimental behavior.
-5. Document hardware requirements, limitations, and failure conditions.
+## References
 
-## Project Status and Limitations
-
-Aegis is an experimental systems project under development.
-
-The architectural descriptions and roadmap communicate the project's intended direction. They do not establish that a bootable hypervisor, working guest execution, complete memory isolation, or production-ready security has already been achieved.
-
-Current capabilities should be assessed from the source code, build instructions, tests, and explicitly documented verification results.
-
-The project should not be used to host sensitive or untrusted workloads on the assumption that its planned isolation mechanisms are already effective.
+- Intel® 64 and IA-32 Architectures Software Developer's Manual, **Volume 3C** (VMX chapters)
+- AMD64 Architecture Programmer's Manual, **Volume 2**, Chapter 15: Secure Virtual Machine
+- *Hypervisor From Scratch* tutorial series (Sina Karvandi)
+- SimpleVisor (Alex Ionescu): a minimal VT-x hypervisor worth reading end to end
+- Bochs source: a readable software implementation of VMX
 
 ## License
 
-The project's license should match the license file included in this repository. See [`LICENSE`](LICENSE) for the applicable terms.
-
-## Acknowledgements
-
-Aegis builds on the broader body of work in processor architecture, hardware virtualization, operating system design, and low-level systems engineering.
-
-The project aims to make its design decisions, implementation progress, and validation process transparent as development advances.
+Licensed under the [Apache License 2.0](LICENSE), consistent with the rest of the PyxisOS ecosystem.
 
 ---
 
 <div align="center">
 
-**AEGIS HYPERVISOR**
+**AEGIS** · *the boundary between hardware and execution*
 
-*Engineering the boundary between hardware and execution.*
-
-Part of the PyxisOS ecosystem · Built for systems research and experimentation
+Part of [PyxisOS](https://github.com/obstinix/PyxisOS) · built in the open by [obstinix](https://github.com/obstinix)
 
 </div>
