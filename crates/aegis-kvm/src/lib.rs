@@ -6,19 +6,26 @@
 //! own types are not linked here because they exist only on Linux, while
 //! this crate-level text is rendered on every OS.)
 //!
-//! Memory safety of the one `unsafe` operation (registering guest memory with
-//! KVM) rests on two type-level guarantees:
+//! Memory safety of registering guest memory with KVM, the `unsafe`
+//! operation that matters, rests on two type-level guarantees:
 //! - `KvmVm` drops its `VmFd` before the guest memory mapping.
 //! - `KvmVcpu<'vm>` borrows its `KvmVm`, so no vCPU outlives the memory.
+//!
+//! The other `unsafe` blocks are plain libc calls on integers or on a
+//! buffer the caller owns: `gettid` and `tgkill` in `smp`, and `poll` and
+//! `read` in `input`. Each has its own SAFETY comment.
 //!
 //! Guests can be entered in real mode (M2 test guests) or booted as Linux
 //! through the 64-bit boot protocol (M3, see `boot`). Linux needs the
 //! in-kernel PIC/IOAPIC and PIT, enabled before any vCPU exists.
-//! `seccomp` holds the run-loop syscall allowlist.
+//! - `acpi` describes SMP vCPUs and virtio-mmio devices to the guest (M4h).
+//! - `smp` runs one sandboxed thread per vCPU (M4h).
+//! - `input` forwards host stdin to a device such as the virtio-console.
+//! - `seccomp` holds the syscall allowlists for those threads.
 //!
 //! Limits:
 //! - String (`rep ins/outs`) port I/O is reported as an unhandled exit.
-//! - MMIO is reported, but no device serves it.
+//! - MMIO is served by devices on the bus. Unclaimed MMIO stops the VM.
 //! - Memory can be read-only, but not non-executable: KVM memory slots
 //!   cannot deny execution.
 //! - Linux boot needs a single RAM region starting at 0, of at most 1 GiB.
@@ -34,6 +41,7 @@ use std::marker::PhantomData;
 
 pub mod acpi;
 pub mod boot;
+pub mod input;
 pub mod seccomp;
 pub mod smp;
 
@@ -611,18 +619,35 @@ fn apply_apic_id(entries: &mut [kvm_cpuid_entry2], apic_id: u32) {
     }
 }
 
-/// Devices reach guest RAM through the VM's bounds-checked accessors.
+/// Devices reach guest RAM (DMA) through the VM's bounds-checked accessors,
+/// and also with the guest's own permissions from the memory map, unlike a
+/// host-side load: a device may not write a region the guest cannot write
+/// (such as a read-only ROM), nor read one the guest cannot read.
 impl GuestMemoryAccess for KvmVm {
     fn read(&self, gpa: u64, buf: &mut [u8]) -> Result<(), GuestAccessError> {
         let len = u64::try_from(buf.len()).unwrap_or(u64::MAX);
-        self.read_guest(gpa, buf)
-            .map_err(|_| GuestAccessError { gpa, len })
+        let err = GuestAccessError { gpa, len };
+        if !self
+            .map
+            .region_for(gpa, len)
+            .is_some_and(|r| r.permissions.read)
+        {
+            return Err(err);
+        }
+        self.read_guest(gpa, buf).map_err(|_| err)
     }
 
     fn write(&self, gpa: u64, data: &[u8]) -> Result<(), GuestAccessError> {
         let len = u64::try_from(data.len()).unwrap_or(u64::MAX);
-        self.write_guest(gpa, data)
-            .map_err(|_| GuestAccessError { gpa, len })
+        let err = GuestAccessError { gpa, len };
+        if !self
+            .map
+            .region_for(gpa, len)
+            .is_some_and(|r| r.permissions.write)
+        {
+            return Err(err);
+        }
+        self.write_guest(gpa, data).map_err(|_| err)
     }
 }
 

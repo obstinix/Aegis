@@ -8,7 +8,8 @@
 //! - `aegis run --config <vm.toml>`: boot a Linux guest under KVM (Linux
 //!   hosts). Guest serial output goes to stdout with control characters
 //!   escaped, and a summary goes to stderr. Exits 0 if the guest stopped
-//!   normally, 1 if it failed.
+//!   normally, 1 if it failed. With `virtio_console_stdin = true` in
+//!   `vm.toml`, stdin is forwarded to the guest's `/dev/hvc0`.
 //! - `aegis selftest seccomp`: install the run-loop seccomp filter and
 //!   attempt a forbidden syscall; the process must be killed by `SIGSYS`.
 //! - `aegis version`.

@@ -141,9 +141,133 @@ fn create_vcpus<'vm>(
         .collect()
 }
 
+/// The virtio-console transport as `aegis run` builds it.
+#[cfg(target_os = "linux")]
+type Console<'a> = aegis_devices::VirtioMmio<
+    aegis_devices::VirtioConsole,
+    &'a aegis_kvm::KvmVm,
+    &'a aegis_kvm::KvmIrqLine<'a>,
+>;
+
+/// The stdin worker: register with the SMP runner (so it can be kicked out
+/// of a blocked read), sandbox this thread, then forward stdin to the
+/// console until end of file or `stop`. A worker that cannot sandbox itself
+/// reads nothing, and the guest runs without input.
+#[cfg(target_os = "linux")]
+fn forward_stdin(
+    console: &std::sync::Mutex<Console<'_>>,
+    stop: &std::sync::atomic::AtomicBool,
+    host: &aegis_kvm::smp::HostThread,
+) -> aegis_kvm::input::InputReport {
+    use aegis_kvm::input::{InputReport, STDIN, forward};
+
+    let _registered = host.enter();
+    if let Err(e) = aegis_kvm::seccomp::apply_input_worker_filter() {
+        return InputReport::failed(e.to_string());
+    }
+    forward(STDIN, stop, &mut |bytes| {
+        console
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .input(bytes)
+    })
+}
+
+/// What [`run_guest`] produced.
+#[cfg(target_os = "linux")]
+struct GuestRun {
+    results: Vec<aegis_kvm::smp::VcpuResult>,
+    unassigned: u64,
+    input: Option<aegis_kvm::input::InputReport>,
+}
+
+/// Run `vcpus` over the UART and the optional virtio-console until the
+/// guest stops, with the stdin worker if `stdin` is set.
+///
+/// The worker starts before the vCPUs, because the coordinator may not
+/// create threads once it is sandboxed. It sees the same stop flag as the
+/// vCPUs, and the runner kicks and waits for it like a vCPU. It is joined
+/// after the flag is set on every path, including a runner that fails to
+/// start. So it cannot outlive the run, and it never delivers input once
+/// the guest is stopping.
+#[cfg(target_os = "linux")]
+fn run_guest(
+    vcpus: Vec<aegis_kvm::KvmVcpu<'_>>,
+    uart: &mut aegis_devices::Serial16550,
+    console: Option<&std::sync::Mutex<Console<'_>>>,
+    stdin: bool,
+) -> Result<GuestRun, String> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Mutex, PoisonError};
+
+    use aegis_core::{DeviceBus, RunLimits};
+    use aegis_devices::Serial16550;
+    use aegis_devices::virtio::mmio::MMIO_SIZE;
+    use aegis_kvm::input::InputReport;
+    use aegis_kvm::smp::{HostThread, SharedMmio};
+
+    let limits = RunLimits {
+        max_exits: 50_000_000,
+        trace_capacity: 64,
+    };
+    let mut shared = console.map(SharedMmio);
+    let mut bus = DeviceBus::new();
+    bus.attach_port(0x3F8, Serial16550::PORTS, uart)
+        .map_err(|e| e.to_string())?;
+    if let Some(device) = shared.as_mut() {
+        bus.attach_mmio(VIRTIO_CONSOLE_MMIO, MMIO_SIZE, device)
+            .map_err(|e| e.to_string())?;
+    }
+    let bus = Mutex::new(bus);
+    let stop = AtomicBool::new(false);
+    let host = HostThread::new();
+    let (results, input) = std::thread::scope(|s| {
+        let worker = console
+            .filter(|_| stdin)
+            .map(|c| s.spawn(|| forward_stdin(c, &stop, &host)));
+        let host_threads: &[&HostThread] = if worker.is_some() { &[&host] } else { &[] };
+        let results = aegis_kvm::smp::run(vcpus, &bus, limits, true, &stop, host_threads);
+        stop.store(true, Ordering::Release);
+        let input = worker.map(|w| {
+            w.join()
+                .unwrap_or_else(|_| InputReport::failed("the stdin worker panicked".to_owned()))
+        });
+        (results, input)
+    });
+    let results = results.map_err(|e| e.to_string())?;
+    let unassigned = bus
+        .into_inner()
+        .unwrap_or_else(PoisonError::into_inner)
+        .unassigned()
+        .count;
+    Ok(GuestRun {
+        results,
+        unassigned,
+        input,
+    })
+}
+
+/// One line on what the stdin worker did.
+#[cfg(target_os = "linux")]
+fn describe_input(report: &aegis_kvm::input::InputReport) -> String {
+    use aegis_kvm::input::InputEnd;
+
+    let end = match &report.end {
+        InputEnd::Eof => "end of file".to_owned(),
+        InputEnd::Stopped => "the guest stopping".to_owned(),
+        InputEnd::Error(e) => format!("an error: {e}"),
+    };
+    let held = if report.undelivered > 0 {
+        format!(", {} bytes read but not delivered", report.undelivered)
+    } else {
+        String::new()
+    };
+    format!("{} bytes forwarded, ended by {end}{held}", report.forwarded)
+}
+
 /// The stderr summary: the stop reason that ended the guest (the first vCPU
-/// whose run was not stopped on request), then one line per vCPU and the
-/// virtio-console's state.
+/// whose run was not stopped on request), then one line per vCPU, the
+/// virtio-console's state and the stdin worker's.
 #[cfg(target_os = "linux")]
 fn summarize(
     normal: bool,
@@ -151,6 +275,7 @@ fn summarize(
     uart_dropped: u64,
     results: &[aegis_kvm::smp::VcpuResult],
     virtio: Option<String>,
+    input: Option<String>,
 ) -> String {
     use std::fmt::Write as _;
 
@@ -180,6 +305,9 @@ fn summarize(
     if let Some(v) = virtio {
         let _ = write!(summary, "\naegis:   virtio-console: {v}");
     }
+    if let Some(i) = input {
+        let _ = write!(summary, "\naegis:   stdin to hvc0: {i}");
+    }
     summary
 }
 
@@ -187,10 +315,9 @@ fn summarize(
 /// seccomp filter on itself before entering the guest.
 #[cfg(target_os = "linux")]
 pub(crate) fn run_vm(cfg: &VmConfig) -> Result<RunReport, String> {
-    use std::sync::Mutex;
+    use std::sync::{Mutex, PoisonError};
 
-    use aegis_core::{DeviceBus, RunLimits, VmEvent, VmLifecycle, vm_stop_event};
-    use aegis_devices::virtio::mmio::MMIO_SIZE;
+    use aegis_core::{VmEvent, VmLifecycle, vm_stop_event};
     use aegis_devices::{Serial16550, VirtioConsole, VirtioMmio};
 
     let kernel = read_image(&cfg.kernel, "kernel")?;
@@ -215,51 +342,39 @@ pub(crate) fn run_vm(cfg: &VmConfig) -> Result<RunReport, String> {
 
     let mut uart = Serial16550::default();
     let irq = vm.irq_line(VIRTIO_CONSOLE_GSI);
-    let mut virtio = cfg
+    let console = cfg
         .virtio_console
-        .then(|| VirtioMmio::new(VirtioConsole::default(), &vm, &irq));
+        .then(|| Mutex::new(VirtioMmio::new(VirtioConsole::default(), &vm, &irq)));
 
     eprintln!(
-        "aegis: seccomp run-loop filter installed on every vCPU thread; booting {} MiB guest with {} vCPU(s){}",
+        "aegis: seccomp run-loop filter installed on every vCPU thread; booting {} MiB guest with {} vCPU(s){}{}",
         cfg.memory_mib,
         cfg.vcpus,
         if cfg.virtio_console {
             " and virtio-console"
         } else {
             ""
+        },
+        if cfg.virtio_console_stdin {
+            "; stdin goes to hvc0"
+        } else {
+            ""
         }
     );
-    let limits = RunLimits {
-        max_exits: 50_000_000,
-        trace_capacity: 64,
-    };
-    let (results, unassigned) = {
-        let mut bus = DeviceBus::new();
-        bus.attach_port(0x3F8, Serial16550::PORTS, &mut uart)
-            .map_err(|e| e.to_string())?;
-        if let Some(v) = virtio.as_mut() {
-            bus.attach_mmio(VIRTIO_CONSOLE_MMIO, MMIO_SIZE, v)
-                .map_err(|e| e.to_string())?;
-        }
-        let bus = Mutex::new(bus);
-        let results = aegis_kvm::smp::run(vcpus, &bus, limits, true).map_err(|e| e.to_string())?;
-        let unassigned = bus
-            .into_inner()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .unassigned()
-            .count;
-        (results, unassigned)
-    };
+    let run = run_guest(vcpus, &mut uart, console.as_ref(), cfg.virtio_console_stdin)?;
+    let console = console.map(|c| c.into_inner().unwrap_or_else(PoisonError::into_inner));
 
-    let reasons: Vec<_> = results.iter().map(|r| r.outcome.stop.clone()).collect();
+    let reasons: Vec<_> = run.results.iter().map(|r| r.outcome.stop.clone()).collect();
     let event = vm_stop_event(&reasons);
     lifecycle.apply(event).map_err(|e| e.to_string())?;
-    let virtio_state = virtio.as_ref().map(|v| {
+    let virtio_state = console.as_ref().map(|v| {
         format!(
-            "status {:#x}, {} bytes, {} dropped, {} KVM_IRQ_LINE failures{}",
+            "status {:#x}, {} bytes out, {} dropped, {} bytes in, {} pending, {} KVM_IRQ_LINE failures{}",
             v.status(),
             v.device().output().len(),
             v.device().dropped(),
+            v.device().delivered_input(),
+            v.device().pending_input(),
             irq.failures(),
             v.last_error()
                 .map(|e| format!(", needs reset: {e}"))
@@ -270,13 +385,14 @@ pub(crate) fn run_vm(cfg: &VmConfig) -> Result<RunReport, String> {
         normal: event == VmEvent::Stop,
         summary: summarize(
             event == VmEvent::Stop,
-            unassigned,
+            run.unassigned,
             uart.dropped(),
-            &results,
+            &run.results,
             virtio_state,
+            run.input.as_ref().map(describe_input),
         ),
         serial: uart.output().to_vec(),
-        virtio_console: virtio.as_ref().map(|v| v.device().output().to_vec()),
+        virtio_console: console.as_ref().map(|v| v.device().output().to_vec()),
     })
 }
 

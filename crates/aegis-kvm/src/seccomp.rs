@@ -25,6 +25,9 @@
 //! Not allowed: opening, reading or creating files; sockets; process or
 //! thread creation; signalling other processes; any KVM ioctl except the two
 //! above; and any other `fcntl` command (no `F_DUPFD`, `F_SETFL` or locks).
+//!
+//! The host-input worker ([`crate::input`]) gets [`input_worker_filter`]:
+//! the same list plus `read` from fd 0 and `poll`/`ppoll`, nothing else.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -69,6 +72,52 @@ fn arg_eq(index: u8, value: u64) -> Result<SeccompRule, SeccompError> {
 ///
 /// [`SeccompError`] if the filter cannot be compiled.
 pub fn run_loop_filter() -> Result<BpfProgram, SeccompError> {
+    compile(run_loop_rules()?)
+}
+
+/// The run-loop allowlist plus what [`crate::input::forward`] needs on
+/// stdin: `read` from fd 0 only, and `poll`/`ppoll` (glibc may use either).
+/// Nothing else is added, so the input worker cannot open, write or signal
+/// anything the vCPU threads cannot.
+///
+/// # Errors
+///
+/// [`SeccompError`] if the filter cannot be compiled.
+pub fn input_worker_filter() -> Result<BpfProgram, SeccompError> {
+    compile(input_worker_rules()?)
+}
+
+fn input_worker_rules() -> Result<BTreeMap<i64, Vec<SeccompRule>>, SeccompError> {
+    let mut rules = run_loop_rules()?;
+    let stdin = u64::try_from(crate::input::STDIN).map_err(err)?;
+    rules.insert(libc::SYS_read, vec![arg_eq(0, stdin)?]);
+    rules.insert(libc::SYS_poll, Vec::new());
+    rules.insert(libc::SYS_ppoll, Vec::new());
+    Ok(rules)
+}
+
+/// Install [`input_worker_filter`] on the calling thread. Irreversible.
+///
+/// # Errors
+///
+/// [`SeccompError`] if the filter cannot be built or the kernel rejects it.
+pub fn apply_input_worker_filter() -> Result<(), SeccompError> {
+    let program = input_worker_filter()?;
+    seccompiler::apply_filter(&program).map_err(err)
+}
+
+fn compile(rules: BTreeMap<i64, Vec<SeccompRule>>) -> Result<BpfProgram, SeccompError> {
+    let filter = SeccompFilter::new(
+        rules,
+        SeccompAction::KillProcess,
+        SeccompAction::Allow,
+        TargetArch::x86_64,
+    )
+    .map_err(err)?;
+    BpfProgram::try_from(filter).map_err(err)
+}
+
+fn run_loop_rules() -> Result<BTreeMap<i64, Vec<SeccompRule>>, SeccompError> {
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
     rules.insert(
         libc::SYS_ioctl,
@@ -111,14 +160,7 @@ pub fn run_loop_filter() -> Result<BpfProgram, SeccompError> {
         // An empty rule list means "allow unconditionally".
         rules.insert(syscall, Vec::new());
     }
-    let filter = SeccompFilter::new(
-        rules,
-        SeccompAction::KillProcess,
-        SeccompAction::Allow,
-        TargetArch::x86_64,
-    )
-    .map_err(err)?;
-    BpfProgram::try_from(filter).map_err(err)
+    Ok(rules)
 }
 
 /// Install [`run_loop_filter`] on the calling thread. Irreversible: the
@@ -144,5 +186,32 @@ mod tests {
             "BPF program has {} instructions",
             program.len()
         );
+    }
+
+    #[test]
+    fn input_worker_filter_adds_only_stdin_reads_and_poll() {
+        let base = run_loop_rules().unwrap();
+        let worker = input_worker_rules().unwrap();
+        let added: Vec<i64> = worker
+            .keys()
+            .filter(|k| !base.contains_key(k))
+            .copied()
+            .collect();
+        // Keys iterate in syscall-number order: read 0, poll 7, ppoll 271.
+        assert_eq!(added, [libc::SYS_read, libc::SYS_poll, libc::SYS_ppoll]);
+        assert_eq!(
+            worker[&libc::SYS_read],
+            vec![arg_eq(0, 0).unwrap()],
+            "read only from fd 0"
+        );
+        assert!(
+            base.iter().all(|(k, v)| worker.get(k) == Some(v)),
+            "every run-loop rule is unchanged"
+        );
+        assert!(
+            !base.contains_key(&libc::SYS_read),
+            "vCPU threads cannot read"
+        );
+        assert!(input_worker_filter().unwrap().len() > run_loop_filter().unwrap().len());
     }
 }

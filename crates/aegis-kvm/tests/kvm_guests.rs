@@ -232,6 +232,57 @@ fn host_writes_outside_guest_memory_are_rejected() {
     assert_eq!(back, [1]);
 }
 
+#[test]
+#[ignore = "requires /dev/kvm; run with --include-ignored"]
+fn device_memory_access_follows_the_guests_permissions() {
+    use aegis_core::{GuestAccessError, GuestMemoryAccess};
+
+    let _guard = lock();
+    let map = GuestMemoryMap::new(
+        &[
+            MemoryRegion {
+                start: 0,
+                size: MIB,
+                permissions: Permissions::RWX,
+            },
+            MemoryRegion {
+                start: MIB,
+                size: MIB,
+                permissions: Permissions::RX,
+            },
+        ],
+        2 * MIB,
+    )
+    .unwrap();
+    let vm = KvmVm::new(map).unwrap();
+    // The host may load a "ROM" image; a device may then read it but not
+    // write it.
+    vm.write_guest(MIB, b"rom").unwrap();
+    let dma: &dyn GuestMemoryAccess = &vm;
+    dma.write(0x1000, b"ram").unwrap();
+    let mut back = [0u8; 3];
+    dma.read(0x1000, &mut back).unwrap();
+    assert_eq!(&back, b"ram");
+    dma.read(MIB, &mut back).unwrap();
+    assert_eq!(&back, b"rom");
+    assert_eq!(
+        dma.write(MIB, b"xyz"),
+        Err(GuestAccessError { gpa: MIB, len: 3 }),
+        "read-only region"
+    );
+    assert_eq!(
+        dma.write(MIB - 1, b"xy"),
+        Err(GuestAccessError {
+            gpa: MIB - 1,
+            len: 2
+        }),
+        "straddles two regions"
+    );
+    assert!(dma.read(2 * MIB, &mut back).is_err(), "outside guest RAM");
+    vm.read_guest(MIB, &mut back).unwrap();
+    assert_eq!(&back, b"rom", "the rejected write changed nothing");
+}
+
 /// Rejected before /dev/kvm is opened, so this runs without KVM access.
 #[test]
 fn non_executable_memory_is_refused_rather_than_silently_ignored() {

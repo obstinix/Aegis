@@ -7,7 +7,12 @@
 //! cmdline = "console=ttyS0 reboot=t"    # optional; default below
 //! vcpus = 2                             # optional; 1..=8, default 1
 //! virtio_console = true                 # optional; default false
+//! virtio_console_stdin = true           # optional; default false; needs virtio_console
 //! ```
+//!
+//! With `virtio_console_stdin`, bytes read from `aegis run`'s stdin are
+//! offered to the guest on the virtio-console (`/dev/hvc0`). Piping a file
+//! or a command into `aegis run` gives a guest deterministic input.
 //!
 //! Parsing is strict: unknown keys are rejected, the file is size-capped, and
 //! values are range-checked before anything touches KVM.
@@ -40,6 +45,7 @@ struct RawConfig {
     cmdline: Option<String>,
     vcpus: Option<u8>,
     virtio_console: Option<bool>,
+    virtio_console_stdin: Option<bool>,
 }
 
 /// A validated `vm.toml`.
@@ -51,6 +57,8 @@ pub(crate) struct VmConfig {
     pub(crate) cmdline: String,
     pub(crate) vcpus: u8,
     pub(crate) virtio_console: bool,
+    /// Forward stdin to the virtio-console.
+    pub(crate) virtio_console_stdin: bool,
 }
 
 /// Read and validate `path`.
@@ -88,13 +96,19 @@ pub(crate) fn parse(text: &str, base: &Path) -> Result<VmConfig, String> {
     if cmdline.contains('\0') {
         return Err("cmdline contains a NUL byte".to_owned());
     }
+    let virtio_console = raw.virtio_console.unwrap_or(false);
+    let virtio_console_stdin = raw.virtio_console_stdin.unwrap_or(false);
+    if virtio_console_stdin && !virtio_console {
+        return Err("virtio_console_stdin = true needs virtio_console = true".to_owned());
+    }
     Ok(VmConfig {
         memory_mib: raw.memory_mib,
         kernel: base.join(raw.kernel),
         initrd: raw.initrd.map(|p| base.join(p)),
         cmdline,
         vcpus,
-        virtio_console: raw.virtio_console.unwrap_or(false),
+        virtio_console,
+        virtio_console_stdin,
     })
 }
 
@@ -138,6 +152,26 @@ mod tests {
         assert!(with("vcpus = 300").is_err(), "not a u8");
         assert!(with("vcpus = -1").is_err());
         assert!(with("virtio_console = \"yes\"").is_err(), "not a bool");
+        assert!(
+            !cfg.virtio_console_stdin,
+            "stdin is not forwarded by default"
+        );
+    }
+
+    #[test]
+    fn stdin_forwarding_needs_the_virtio_console() {
+        let base = Path::new(".");
+        let with =
+            |extra: &str| parse(&format!("memory_mib = 64\nkernel = \"k\"\n{extra}\n"), base);
+        let cfg = with("virtio_console = true\nvirtio_console_stdin = true").unwrap();
+        assert!(cfg.virtio_console && cfg.virtio_console_stdin);
+        let err = with("virtio_console_stdin = true").unwrap_err();
+        assert!(err.contains("needs virtio_console = true"), "{err}");
+        assert!(with("virtio_console = false\nvirtio_console_stdin = true").is_err());
+        assert!(
+            with("virtio_console = true\nvirtio_console_stdin = 1").is_err(),
+            "not a bool"
+        );
     }
 
     #[test]
