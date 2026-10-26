@@ -7,7 +7,8 @@ xtask = "run --package xtask --"
 # PE header and a per-build PDB reference and ID into a debug directory, so
 # two builds of the same source differ. /Brepro removes the timestamp and
 # /DEBUG:NONE the debug directory (and the PDB with it; revisit when
-# debugging with GDB needs symbols). Checked 2026-10-26: builds in two target
-# directories are byte-identical.
+# debugging with GDB needs symbols). `cargo xtask repro-test` checks that two
+# clean builds are byte-identical (and runs in CI). A RUSTFLAGS environment
+# variable replaces these flags, and the test then fails.
 [target.x86_64-unknown-uefi]
 rustflags = ["-C", "link-arg=/DEBUG:NONE", "-C", "link-arg=/Brepro"]
