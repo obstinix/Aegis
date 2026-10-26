@@ -1,0 +1,18 @@
+[package]
+name = "aegis-devices"
+description = "Backend-neutral Aegis device models (16550 UART first). no_std + alloc."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+aegis-core = { path = "../aegis-core" }
+
+[dev-dependencies]
+aegis-core = { path = "../aegis-core", features = ["mock"] }
+
+[lints]
+workspace = true

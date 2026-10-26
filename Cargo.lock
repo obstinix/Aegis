@@ -18,6 +18,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "aegis-devices"
+version = "0.0.0"
+dependencies = [
+ "aegis-core",
+]
+
+[[package]]
 name = "aegis-probe"
 version = "0.0.0"
 dependencies = [
