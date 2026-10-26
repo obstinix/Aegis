@@ -66,6 +66,9 @@ pub enum QueueError {
     Indirect,
     /// A chain's buffers total more than [`MAX_CHAIN_BYTES`].
     ChainTooLarge,
+    /// A chain the device must write into (e.g. a console receive buffer)
+    /// holds a device-readable buffer.
+    NotWritable,
 }
 
 impl fmt::Display for QueueError {
@@ -84,6 +87,7 @@ impl fmt::Display for QueueError {
             Self::ChainTooLarge => {
                 write!(f, "descriptor chain larger than {MAX_CHAIN_BYTES} bytes")
             }
+            Self::NotWritable => write!(f, "receive chain holds a device-readable buffer"),
         }
     }
 }

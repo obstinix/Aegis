@@ -45,6 +45,13 @@ pub trait VirtioDevice {
         queue: &mut SplitQueue,
         mem: &dyn GuestMemoryAccess,
     ) -> Result<bool, QueueError>;
+    /// A queue the device wants processed next, because processing the last
+    /// one gave it work there (the console opening its receive path on the
+    /// first transmit). The transport asks after each processing and acts on
+    /// it in the same exit. The default never asks.
+    fn take_requested_queue(&mut self) -> Option<usize> {
+        None
+    }
     /// Return to the initial state (transport reset).
     fn reset(&mut self);
 }

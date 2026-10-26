@@ -7,7 +7,10 @@
 //!   and nothing that was not offered; otherwise it reads back clear, so the
 //!   driver sees the failure;
 //! - queue configuration changes only while the queue is disabled;
-//! - notifications count only after `DRIVER_OK`.
+//! - notifications count only after `DRIVER_OK`. The host can also ask
+//!   for processing with [`VirtioMmio::process`] (e.g. when console input
+//!   arrives), and a device can ask for a second queue to be processed
+//!   after the first ([`VirtioDevice::take_requested_queue`]).
 //!
 //! A malformed queue sets `DEVICE_NEEDS_RESET` and raises a configuration
 //! change interrupt (§2.1.2); the error is kept for diagnostics.
@@ -125,6 +128,20 @@ impl<D: VirtioDevice, M: GuestMemoryAccess, I: InterruptLine> VirtioMmio<D, M, I
         &self.device
     }
 
+    /// The wrapped device, e.g. to queue host input. Call
+    /// [`VirtioMmio::process`] afterwards so the device acts on it.
+    pub const fn device_mut(&mut self) -> &mut D {
+        &mut self.device
+    }
+
+    /// Let the device process queue `index` without a driver notification,
+    /// because the host has new work for it (such as console input). Same
+    /// rules as a notification: nothing happens before `DRIVER_OK`, after
+    /// `DEVICE_NEEDS_RESET`, or on a queue that is not ready.
+    pub fn process(&mut self, index: usize) {
+        self.service(index);
+    }
+
     /// The device status byte.
     pub const fn status(&self) -> u32 {
         self.status
@@ -193,16 +210,31 @@ impl<D: VirtioDevice, M: GuestMemoryAccess, I: InterruptLine> VirtioMmio<D, M, I
     }
 
     fn notify(&mut self, index: u32) {
+        if let Ok(i) = usize::try_from(index) {
+            self.service(i);
+        }
+    }
+
+    /// Process queue `first`, then any queue the device asks for as a
+    /// result. Bounded by the number of queues, so a device cannot keep the
+    /// transport busy.
+    fn service(&mut self, first: usize) {
+        let mut next = Some(first);
+        for _ in 0..=self.queues.len() {
+            let Some(i) = next.take() else {
+                break;
+            };
+            self.service_one(i);
+            next = self.device.take_requested_queue();
+        }
+    }
+
+    /// Process queue `i` if the device and the queue are live.
+    fn service_one(&mut self, i: usize) {
         if self.status & status::DRIVER_OK == 0 || self.status & status::DEVICE_NEEDS_RESET != 0 {
             return;
         }
-        let Some(i) = usize::try_from(index)
-            .ok()
-            .filter(|i| *i < self.queues.len())
-        else {
-            return;
-        };
-        if !self.queues[i].is_ready() {
+        if !self.queues.get(i).is_some_and(SplitQueue::is_ready) {
             return;
         }
         let result = self
