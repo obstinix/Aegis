@@ -1,6 +1,6 @@
 [package]
 name = "aegis-cli"
-description = "The `aegis` command: host diagnostics now, VM management in later milestones."
+description = "The `aegis` command: host diagnostics and running guests."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,8 +13,14 @@ name = "aegis"
 path = "src/main.rs"
 
 [dependencies]
+aegis-core = { path = "../aegis-core" }
+aegis-devices = { path = "../aegis-devices" }
+# Empty on non-Linux targets; `aegis run` reports that it needs Linux.
+aegis-kvm = { path = "../aegis-kvm" }
 aegis-probe = { path = "../aegis-probe" }
+serde.workspace = true
 serde_json.workspace = true
+toml.workspace = true
 
 [lints]
 workspace = true

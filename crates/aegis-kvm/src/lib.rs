@@ -11,10 +11,17 @@
 //! - `KvmVm` drops its `VmFd` before the guest memory mapping.
 //! - `KvmVcpu<'vm>` borrows its `KvmVm`, so no vCPU outlives the memory.
 //!
-//! Limits in M2: real-mode entry only; string (`rep ins/outs`) port I/O is
-//! reported as an unhandled exit; MMIO is reported but no device serves it;
-//! memory can be read-only but not non-executable (KVM memory slots cannot
-//! deny execution).
+//! Guests can be entered in real mode (M2 test guests) or booted as Linux
+//! through the 64-bit boot protocol (M3, see `boot`). Linux needs the
+//! in-kernel PIC/IOAPIC and PIT, enabled before any vCPU exists.
+//! `seccomp` holds the run-loop syscall allowlist.
+//!
+//! Limits:
+//! - String (`rep ins/outs`) port I/O is reported as an unhandled exit.
+//! - MMIO is reported, but no device serves it.
+//! - Memory can be read-only, but not non-executable: KVM memory slots
+//!   cannot deny execution.
+//! - Linux boot needs a single RAM region starting at 0, of at most 1 GiB.
 //!
 //! On non-Linux targets this crate is empty.
 
@@ -25,13 +32,36 @@
 use std::fmt;
 use std::marker::PhantomData;
 
+pub mod boot;
+pub mod seccomp;
+
 use aegis_core::{AccessSize, GuestMemoryMap, IoAccess, MmioAccess, PortIo, Vcpu, VmExit};
-use kvm_bindings::{KVM_MEM_READONLY, kvm_regs, kvm_userspace_memory_region};
+use kvm_bindings::{
+    KVM_MAX_CPUID_ENTRIES, KVM_MEM_READONLY, KVM_PIT_SPEAKER_DUMMY, kvm_pit_config, kvm_regs,
+    kvm_segment, kvm_userspace_memory_region,
+};
+
+use crate::boot::{BootError, BzImage};
 use kvm_ioctls::{Cap, Kvm, VcpuExit, VcpuFd, VmFd};
 use vm_memory::{Bytes, GuestAddress, GuestMemoryBackend, GuestMemoryMmap, GuestMemoryRegion};
 
 /// RFLAGS bit 1 is reserved and must be set.
 const RFLAGS_RESERVED: u64 = 0x2;
+/// Three pages KVM needs on Intel for its internal TSS, just below 4 GiB and
+/// outside any guest RAM Aegis maps (the address Firecracker also uses).
+const KVM_TSS_ADDR: u64 = 0xFFFB_D000;
+const KVM_TSS_END: u64 = 0xFFFC_0000;
+const CR0_PE: u64 = 0x1;
+const CR0_PG: u64 = 0x8000_0000;
+const CR4_PAE: u64 = 0x20;
+const EFER_LME: u64 = 0x100;
+const EFER_LMA: u64 = 0x400;
+/// Local APIC LVT LINT0 / LINT1 registers (Intel SDM Vol. 3A, 11.5.1).
+const APIC_LVT_LINT0: std::ops::Range<usize> = 0x350..0x354;
+const APIC_LVT_LINT1: std::ops::Range<usize> = 0x360..0x364;
+const APIC_DELIVERY_MODE_MASK: u32 = 0x700;
+const APIC_MODE_EXTINT: u32 = 0x700;
+const APIC_MODE_NMI: u32 = 0x400;
 
 /// Errors from the KVM backend.
 #[derive(Debug)]
@@ -54,6 +84,14 @@ pub enum KvmError {
         /// Length of the write.
         len: u64,
     },
+    /// The kernel image or boot configuration was rejected.
+    Boot(BootError),
+}
+
+impl From<BootError> for KvmError {
+    fn from(e: BootError) -> Self {
+        Self::Boot(e)
+    }
 }
 
 impl fmt::Display for KvmError {
@@ -68,6 +106,7 @@ impl fmt::Display for KvmError {
                     "write of {len:#x} bytes at {gpa:#x} is outside guest memory"
                 )
             }
+            Self::Boot(e) => write!(f, "{e}"),
         }
     }
 }
@@ -85,7 +124,7 @@ pub struct KvmVm {
     vm: VmFd,
     memory: GuestMemoryMmap,
     map: GuestMemoryMap,
-    _kvm: Kvm,
+    kvm: Kvm,
 }
 
 impl fmt::Debug for KvmVm {
@@ -175,7 +214,7 @@ impl KvmVm {
             vm,
             memory,
             map,
-            _kvm: kvm,
+            kvm,
         })
     }
 
@@ -183,6 +222,102 @@ impl KvmVm {
     #[must_use]
     pub fn memory_map(&self) -> &GuestMemoryMap {
         &self.map
+    }
+
+    /// Create the in-kernel interrupt controllers (PIC, IOAPIC, LAPICs) and
+    /// PIT. Must run before any vCPU exists; taking `&mut self` makes the
+    /// borrow checker enforce that, since a vCPU borrows the VM.
+    ///
+    /// # Errors
+    ///
+    /// [`KvmError::Unsupported`] if guest RAM overlaps KVM's TSS pages;
+    /// [`KvmError::Kvm`] if an ioctl fails.
+    pub fn enable_legacy_interrupts(&mut self) -> Result<(), KvmError> {
+        if self
+            .map
+            .regions()
+            .iter()
+            .any(|r| r.start < KVM_TSS_END && r.end().is_none_or(|end| end > KVM_TSS_ADDR))
+        {
+            return Err(KvmError::Unsupported(
+                "guest RAM overlaps KVM's TSS pages below 4 GiB",
+            ));
+        }
+        let tss = usize::try_from(KVM_TSS_ADDR)
+            .map_err(|_| KvmError::Unsupported("host address space too small"))?;
+        self.vm
+            .set_tss_address(tss)
+            .map_err(kvm_err("KVM_SET_TSS_ADDR"))?;
+        self.vm
+            .create_irq_chip()
+            .map_err(kvm_err("KVM_CREATE_IRQCHIP"))?;
+        let pit = kvm_pit_config {
+            flags: KVM_PIT_SPEAKER_DUMMY,
+            ..kvm_pit_config::default()
+        };
+        self.vm.create_pit2(pit).map_err(kvm_err("KVM_CREATE_PIT2"))
+    }
+
+    /// Load a bzImage, optional initramfs and command line into guest memory
+    /// for the 64-bit boot protocol, and return the entry state for
+    /// [`KvmVcpu::set_linux_entry`].
+    ///
+    /// # Errors
+    ///
+    /// [`KvmError::Boot`] for an unusable image or configuration that does
+    /// not fit; [`KvmError::Unsupported`] unless guest memory is one region
+    /// starting at 0 of at most [`boot::IDENTITY_MAP_BYTES`].
+    pub fn load_linux(
+        &self,
+        kernel: &[u8],
+        initrd: Option<&[u8]>,
+        cmdline: &str,
+    ) -> Result<LinuxEntry, KvmError> {
+        let ram = self.map.total_bytes();
+        if self.map.regions().len() != 1 || self.map.region_for(0, ram).is_none() {
+            return Err(KvmError::Unsupported(
+                "Linux boot needs one guest RAM region starting at 0",
+            ));
+        }
+        if ram > boot::IDENTITY_MAP_BYTES {
+            return Err(KvmError::Unsupported(
+                "Linux boot supports at most 1 GiB of guest RAM",
+            ));
+        }
+        if cmdline.bytes().any(|b| b == 0) {
+            return Err(KvmError::Unsupported("NUL byte in the kernel command line"));
+        }
+        let bz = BzImage::parse(kernel)?;
+        let len = |n: usize| {
+            u64::try_from(n).map_err(|_| KvmError::Unsupported("input larger than 2^64 bytes"))
+        };
+
+        let initrd_at = match initrd {
+            Some(data) => {
+                let size = len(data.len())?;
+                Some((bz.place_initrd(ram, size)?, size))
+            }
+            None => None,
+        };
+        let zero_page = bz.zero_page(ram, len(cmdline.len())?, initrd_at)?;
+
+        self.write_guest(boot::KERNEL_ADDR, bz.protected_mode_kernel())?;
+        if let (Some(data), Some((addr, _))) = (initrd, initrd_at) {
+            self.write_guest(addr, data)?;
+        }
+        let mut cmd = cmdline.as_bytes().to_vec();
+        cmd.push(0);
+        self.write_guest(boot::CMDLINE_ADDR, &cmd)?;
+        self.write_guest(boot::ZERO_PAGE_ADDR, &zero_page)?;
+        let [pml4, pdpt, pd] = boot::identity_page_tables();
+        self.write_guest(boot::PML4_ADDR, &pml4)?;
+        self.write_guest(boot::PDPT_ADDR, &pdpt)?;
+        self.write_guest(boot::PD_ADDR, &pd)?;
+        self.write_guest(boot::GDT_ADDR, &boot::gdt())?;
+        Ok(LinuxEntry {
+            rip: bz.entry_64(),
+            initrd: initrd_at,
+        })
     }
 
     /// Copy `bytes` into guest memory at `gpa` (host-side load, e.g. a guest
@@ -280,6 +415,121 @@ impl KvmVcpu<'_> {
     #[must_use]
     pub fn last_unhandled_detail(&self) -> Option<&str> {
         self.last_unhandled.as_deref()
+    }
+
+    /// Prepare this vCPU to enter a kernel loaded by [`KvmVm::load_linux`]:
+    /// - CPUID from `KVM_GET_SUPPORTED_CPUID`;
+    /// - LAPIC LINT0 as `ExtINT` and LINT1 as NMI, so in-kernel PIC interrupts
+    ///   reach the CPU;
+    /// - long mode with the early identity map and the boot-protocol GDT;
+    /// - RIP at the 64-bit entry, RSI at the zero page, interrupts off.
+    ///
+    /// # Errors
+    ///
+    /// [`KvmError::Kvm`] if an ioctl fails, including when
+    /// [`KvmVm::enable_legacy_interrupts`] was not called (no in-kernel LAPIC).
+    pub fn set_linux_entry(&mut self, vm: &KvmVm, entry: &LinuxEntry) -> Result<(), KvmError> {
+        let cpuid = vm
+            .kvm
+            .get_supported_cpuid(KVM_MAX_CPUID_ENTRIES)
+            .map_err(kvm_err("KVM_GET_SUPPORTED_CPUID"))?;
+        self.fd
+            .set_cpuid2(&cpuid)
+            .map_err(kvm_err("KVM_SET_CPUID2"))?;
+
+        let mut lapic = self.fd.get_lapic().map_err(kvm_err("KVM_GET_LAPIC"))?;
+        set_lvt_mode(&mut lapic.regs, APIC_LVT_LINT0, APIC_MODE_EXTINT);
+        set_lvt_mode(&mut lapic.regs, APIC_LVT_LINT1, APIC_MODE_NMI);
+        self.fd
+            .set_lapic(&lapic)
+            .map_err(kvm_err("KVM_SET_LAPIC"))?;
+
+        let mut sregs = self.fd.get_sregs().map_err(kvm_err("KVM_GET_SREGS"))?;
+        sregs.cs = flat_segment(boot::CODE_SELECTOR, SegmentKind::Code64);
+        let data = flat_segment(boot::DATA_SELECTOR, SegmentKind::Data);
+        sregs.ds = data;
+        sregs.es = data;
+        sregs.fs = data;
+        sregs.gs = data;
+        sregs.ss = data;
+        sregs.tr = flat_segment(boot::TSS_SELECTOR, SegmentKind::Tss);
+        sregs.gdt.base = boot::GDT_ADDR;
+        sregs.gdt.limit = u16::try_from(boot::GDT_SIZE.saturating_sub(1)).unwrap_or(u16::MAX);
+        // No IDT: the kernel installs its own before enabling interrupts.
+        sregs.idt.base = 0;
+        sregs.idt.limit = 0;
+        sregs.cr3 = boot::PML4_ADDR;
+        sregs.cr4 |= CR4_PAE;
+        sregs.cr0 |= CR0_PE | CR0_PG;
+        sregs.efer |= EFER_LME | EFER_LMA;
+        self.fd
+            .set_sregs(&sregs)
+            .map_err(kvm_err("KVM_SET_SREGS"))?;
+
+        let regs = kvm_regs {
+            rip: entry.rip,
+            rsi: boot::ZERO_PAGE_ADDR,
+            rsp: boot::BOOT_STACK,
+            rbp: boot::BOOT_STACK,
+            rflags: RFLAGS_RESERVED,
+            ..kvm_regs::default()
+        };
+        self.fd.set_regs(&regs).map_err(kvm_err("KVM_SET_REGS"))
+    }
+}
+
+/// Where and how to enter a kernel prepared by [`KvmVm::load_linux`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinuxEntry {
+    /// 64-bit entry point.
+    pub rip: u64,
+    /// Initramfs guest address and length, if one was loaded.
+    pub initrd: Option<(u64, u64)>,
+}
+
+#[derive(Clone, Copy)]
+enum SegmentKind {
+    Code64,
+    Data,
+    Tss,
+}
+
+/// A flat (base 0, 4 GiB limit, 4 KiB granularity) segment matching the
+/// descriptor at `selector` in [`boot::gdt`].
+fn flat_segment(selector: u16, kind: SegmentKind) -> kvm_segment {
+    // (type, S, L, D/B) per descriptor; see boot::gdt.
+    let (type_, s, l, db) = match kind {
+        SegmentKind::Code64 => (0xB, 1, 1, 0),
+        SegmentKind::Data => (0x3, 1, 0, 1),
+        SegmentKind::Tss => (0xB, 0, 0, 0),
+    };
+    kvm_segment {
+        base: 0,
+        limit: 0xFFFF_FFFF,
+        selector,
+        type_,
+        present: 1,
+        dpl: 0,
+        db,
+        s,
+        l,
+        g: 1,
+        ..kvm_segment::default()
+    }
+}
+
+/// Set the delivery mode of a local APIC LVT register in a `KVM_GET_LAPIC` image.
+fn set_lvt_mode(regs: &mut [std::ffi::c_char], range: std::ops::Range<usize>, mode: u32) {
+    let Some(reg) = regs.get_mut(range) else {
+        return;
+    };
+    let mut bytes = [0u8; 4];
+    for (b, r) in bytes.iter_mut().zip(reg.iter()) {
+        *b = r.cast_unsigned();
+    }
+    let value = (u32::from_le_bytes(bytes) & !APIC_DELIVERY_MODE_MASK) | mode;
+    for (r, b) in reg.iter_mut().zip(value.to_le_bytes()) {
+        *r = b.cast_signed();
     }
 }
 
