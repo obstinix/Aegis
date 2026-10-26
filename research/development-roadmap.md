@@ -28,7 +28,9 @@
 | M4h | KVM: multi-vCPU + virtio | 2+ vCPUs boot Linux; virtio-blk over MMIO with a read-only image; fuzz targets for the device register paths | WSL2 KVM | M3 | not started |
 | M5h | PyxisOS Track A validation | M3 tests rerun on the ThinkPad X1 Carbon (i7-7600U). Results are recorded in `compatibility-matrix.md` as hardware-tested. | Physical hardware | M3; owner runs it on that machine | not started |
 
-### M0 detail (2026-10-26, Windows host, rustc 1.97.0 `stable-x86_64-pc-windows-gnu`)
+### M0 detail (2026-10-26, Windows host)
+
+All results below were rerun from a clean build on the pinned `1.97.0-x86_64-pc-windows-msvc` toolchain (linker from VS 2022 Build Tools). Earlier runs used `stable-x86_64-pc-windows-gnu` (also rustc 1.97.0) with the same results.
 
 | Criterion | Result |
 |---|---|
@@ -39,7 +41,7 @@
 | `cargo doc` with `-D warnings` | **passed** |
 | `no_std` proof: build and clippy for `x86_64-unknown-none` (installed target) | **passed** |
 | Build for `x86_64-unknown-uefi` | **passed** (debug + release + clippy `-D warnings`). Target added with `rustup target add x86_64-unknown-uefi` on the stable toolchain, owner-approved 2026-10-26. |
-| Toolchain pin (`rust-toolchain.toml`) | **not done**: pinning `1.97.0` would download a separately named toolchain. `rust-version = "1.97"` is set in `Cargo.toml` meanwhile. Needs owner approval. |
+| Toolchain pin (`rust-toolchain.toml`) | **done**: `channel = "1.97.0"`, with clippy, rustfmt, and the `x86_64-unknown-uefi` and `x86_64-unknown-none` targets. Owner-approved download 2026-10-26. On Windows it resolves to the MSVC host toolchain. |
 | `cargo deny check` | **not run**: `cargo-deny` not installed. No dependencies exist yet. |
 | Same checks in WSL2 | **not run**: no Rust in WSL2 |
 
