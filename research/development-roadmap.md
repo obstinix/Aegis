@@ -42,7 +42,7 @@ All results below were rerun from a clean build on the pinned `1.97.0-x86_64-pc-
 | `no_std` proof: build and clippy for `x86_64-unknown-none` (installed target) | **passed** |
 | Build for `x86_64-unknown-uefi` | **passed** (debug + release + clippy `-D warnings`). Target added with `rustup target add x86_64-unknown-uefi` on the stable toolchain, owner-approved 2026-10-26. |
 | Toolchain pin (`rust-toolchain.toml`) | **done**: `channel = "1.97.0"`, with clippy, rustfmt, and the `x86_64-unknown-uefi` and `x86_64-unknown-none` targets. Owner-approved download 2026-10-26. On Windows it resolves to the MSVC host toolchain. |
-| `cargo deny check` | **not run**: `cargo-deny` not installed. No dependencies exist yet. |
+| `cargo deny check` | **passed**: advisories, bans, licenses and sources all ok, with no warnings. `cargo-deny` 0.20.2 installed via `cargo install --locked`, owner-approved 2026-10-26. `deny.toml` holds the ADR-0011 allowlist. Negative test: a scratch copy declaring `GPL-3.0-only` fails with `rejected: license is not explicitly allowed` (exit 4). With no dependencies yet, this proves the policy is wired, not that any dependency was vetted. |
 | Same checks in WSL2 | **not run**: no Rust in WSL2 |
 
 ## Track B: bare metal (VMX, UEFI)

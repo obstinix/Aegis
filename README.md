@@ -28,7 +28,7 @@ written to understand, and then own, the boundary between hardware and execution
 | Area                         | State           |
 | ---------------------------- | --------------- |
 | Architecture & design docs   | 🟡 In progress  |
-| Build system / toolchain     | 🟡 In progress: toolchain pinned to Rust 1.97.0; workspace builds and tests on Windows; `aegis-core` builds for `x86_64-unknown-uefi`. `cargo-deny` and WSL2 still pending. |
+| Build system / toolchain     | 🟡 In progress: toolchain pinned to Rust 1.97.0; workspace builds and tests on Windows; `aegis-core` builds for `x86_64-unknown-uefi`. `cargo deny check` passes with the ADR-0011 license allowlist. WSL2 still pending. |
 | `aegis-core` (lifecycle, memory map, exit model) | 🟡 Implemented, unit-tested (22 tests, Windows). Not used by any backend yet. |
 | `aegis doctor` capability report | ⚪ Not started  |
 | Hosted KVM backend (stage 1) | ⚪ Not started  |
