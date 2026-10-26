@@ -1,0 +1,23 @@
+[package]
+name = "aegis-kvm"
+description = "Aegis hosted backend: Linux KVM via rust-vmm (ADR-0004). Builds to an empty crate on other OSes."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+aegis-core = { path = "../aegis-core" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+kvm-bindings.workspace = true
+kvm-ioctls.workspace = true
+vm-memory.workspace = true
+
+[dev-dependencies]
+aegis-devices = { path = "../aegis-devices" }
+
+[lints]
+workspace = true
