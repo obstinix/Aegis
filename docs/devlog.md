@@ -117,3 +117,23 @@ Honest record of how work was done, including AI assistance. Commit metadata sta
 - **Design note:** port I/O is served inside `Vcpu::run`. ADR-0007 now has an "as implemented" note explaining why.
 - **Paused by owner:** before `aegis-kvm` existed, the owner told me to stop, commit and push. A local `aegis-kvm` scaffold (a manifest and a one-line placeholder) and its workspace dependencies (`kvm-bindings`, `vm-memory` 0.18.0) were backed out uncommitted. The scaffold was moved to the session scratch directory, not deleted.
 - **Not done:** the KVM backend; running the NASM guests; the KVM acceptance tests.
+
+## 2026-10-26: Phase 4, M2 completed (KVM backend)
+
+- **Assistance:** Claude Code (model `claude-opus-5-5`), same session. Resumed on the owner's "continue" after the M2 partial push.
+- **Incident, WSL Cargo cache:** six downloaded crate archives (`vm-memory` 0.18.0, `thiserror`, `thiserror-impl`, three `winapi` crates), all fetched at 05:09 UTC, were 0 bytes, and their extracted sources were empty.
+  - **Likely cause** (not proven): the WSL VM stopped before ext4 flushed delayed writes. The journal shows unclean shutdowns.
+  - **Scope:** the other 159 archives and the WSL toolchain (230 files) were intact.
+  - **Fix:** only those six cache entries were removed and re-downloaded, followed by `sync`; their SHA-256 sums match `Cargo.lock`.
+  - **Impact:** none. Empty sources fail at compile time, so nothing was built from bad sources.
+- **Added `crates/aegis-kvm`:**
+  - `KvmVm` (VM plus `vm-memory` guest memory from a `GuestMemoryMap`) and `KvmVcpu<'vm>` (real-mode entry; `Vcpu` implementation mapping KVM exits to `VmExit`).
+  - One `unsafe` block, with a SAFETY argument based on drop order and the vCPU borrowing the VM.
+  - 2 unit tests and 5 KVM acceptance tests that assemble and run the three NASM guests.
+- **First live guest run under KVM:** all acceptance tests passed in WSL2. Mutation checks confirmed that the guest-message assertion and the fd-leak check can fail.
+- **Issues found:**
+  - In 0.18, `vm-memory`'s region iteration lives on trait `GuestMemoryBackend`, not `GuestMemory`.
+  - Clippy `items_after_statements` in a test.
+  - Broken intra-doc links on Windows, where the crate is empty but its docs still render.
+  - A safety check blocked a scratch-directory `rm -rf` through a shell variable; I worked around it with a fresh directory and nothing was deleted. The old scratch directories `kvm-mutant-*` and `wt-target` are still in the session scratchpad, for the owner to remove if wanted.
+- **Not done:** a live unknown-exit test (mock only); M3 (Linux boot). No push yet; awaiting owner approval.

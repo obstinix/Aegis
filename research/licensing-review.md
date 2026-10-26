@@ -49,7 +49,9 @@ Everything below assumes **Apache-2.0 outbound**.
 | `kvm-ioctls` | 0.25.1 | Apache-2.0 OR MIT | KVM ioctl wrappers |
 | `kvm-bindings` | 0.14.2 | Apache-2.0 | KVM structs |
 | `vmm-sys-util` | 0.15.0 | BSD-3-Clause | eventfd, ioctl helpers |
-| `vm-memory` | 0.17.2 | Apache-2.0 OR BSD-3-Clause | Guest memory abstraction |
+| `vm-memory` | 0.18.0 (in use since M2; 0.17.2 is a compatibility shim over 0.18) | Apache-2.0 OR BSD-3-Clause | Guest memory abstraction (`backend-mmap`) |
+| `thiserror`, `thiserror-impl` | 2.0.21 | MIT OR Apache-2.0 | Pulled in by `vm-memory` |
+| `winapi` (+ two `-gnu` helper crates) | 0.3.9 / 0.4.0 | MIT OR Apache-2.0 | Locked as `vm-memory`'s Windows-only dependency; never compiled, since `aegis-kvm` builds `vm-memory` only on Linux |
 | `linux-loader` | 0.14.0 | Apache-2.0 AND BSD-3-Clause | bzImage/ELF loading, boot params |
 | `virtio-queue` | 0.18.0 | Apache-2.0 AND BSD-3-Clause | virtio (later milestones) |
 | `vm-device` | 0.1.0 | Apache-2.0 OR BSD-3-Clause | Device bus |
