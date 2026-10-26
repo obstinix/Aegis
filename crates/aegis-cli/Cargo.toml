@@ -1,0 +1,20 @@
+[package]
+name = "aegis-cli"
+description = "The `aegis` command: host diagnostics now, VM management in later milestones."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "aegis"
+path = "src/main.rs"
+
+[dependencies]
+aegis-probe = { path = "../aegis-probe" }
+serde_json.workspace = true
+
+[lints]
+workspace = true

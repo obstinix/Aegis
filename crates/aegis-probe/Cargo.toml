@@ -1,0 +1,27 @@
+[package]
+name = "aegis-probe"
+description = "Host capability detection for Aegis: CPUID decoding (no_std) and host/KVM probing (std)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+default = ["std"]
+# Host probing, Linux sources, the doctor report, and serde support.
+# Without it the crate is no_std and offers CPUID decoding only.
+std = ["dep:serde", "dep:kvm-ioctls"]
+
+[dependencies]
+serde = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+kvm-ioctls = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

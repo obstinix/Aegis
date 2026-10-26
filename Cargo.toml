@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/aegis-core"]
+members = ["crates/aegis-core", "crates/aegis-probe", "crates/aegis-cli"]
 
 [workspace.package]
 version = "0.0.0"
@@ -9,6 +9,13 @@ rust-version = "1.97"
 license = "Apache-2.0"
 repository = "https://github.com/obstinix/Aegis"
 publish = false
+
+# Every external crate is listed here once, with a pinned minor version.
+# Licenses are enforced by deny.toml (ADR-0011).
+[workspace.dependencies]
+kvm-ioctls = "0.25.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

@@ -1,0 +1,2 @@
+# Test fixtures are byte-exact captures of system files; never rewrite their line endings.
+crates/*/tests/fixtures/** -text
