@@ -16,6 +16,28 @@ WSL2 Ubuntu 24.04, kernel `6.18.33.2-microsoft-standard-WSL2`, user `obsti`, not
 
 At capture time `/dev/kvm` was `crw-rw---- root kvm`.
 
+## `wsl2-ultra9-275hx-kvm/`
+
+The same WSL2 environment, captured later on 2026-10-26 after the owner added `obsti` to `kvm` (`getent group kvm` → `kvm:x:993:obsti`; `/etc/group` modified 04:57:04 UTC).
+
+| File | Source |
+|---|---|
+| `observations.json` | `aegis doctor --raw` in that environment |
+
+Independent cross-check used by the tests: raw ioctls with Python's `fcntl`, without `kvm-ioctls` or any Aegis code. Request numbers come from the kernel's KVM API: `KVM_GET_API_VERSION` = `_IO(0xAE, 0x00)`, `KVM_CHECK_EXTENSION` = `_IO(0xAE, 0x03)`.
+
+```
+fd = os.open("/dev/kvm", os.O_RDWR | os.O_CLOEXEC)
+fcntl.ioctl(fd, 0xAE00, 0)      -> 12
+fcntl.ioctl(fd, 0xAE03, 0)      -> 1   # KVM_CAP_IRQCHIP
+fcntl.ioctl(fd, 0xAE03, 3)      -> 1   # KVM_CAP_USER_MEMORY
+fcntl.ioctl(fd, 0xAE03, 7)      -> 1   # KVM_CAP_EXT_CPUID
+fcntl.ioctl(fd, 0xAE03, 33)     -> 1   # KVM_CAP_PIT2
+fcntl.ioctl(fd, 0xAE03, 136)    -> 1   # KVM_CAP_IMMEDIATE_EXIT
+```
+
+The two WSL2 captures ran on different logical CPUs, so leaf 1 EBX (which includes the initial APIC ID) differs between them. That's expected.
+
 ## `windows-ultra9-275hx/`
 
 Windows 11 root partition under Hyper-V.

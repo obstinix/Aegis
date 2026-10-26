@@ -40,11 +40,11 @@ pub enum DevKvm {
 impl DevKvm {
     /// Probe the live `/dev/kvm`.
     ///
-    /// Status: only the `PermissionDenied` path has run live (WSL2 on the
-    /// development workstation, whose user is not in the `kvm` group). The
-    /// `Opened` path, including the `kvm-ioctls` calls, is implemented but
-    /// has not run yet. How each state is *reported* is covered by tests in
-    /// [`crate::report`].
+    /// Status: the `PermissionDenied` and `Opened` paths have both run live in
+    /// WSL2 on the development workstation, before and after the user was
+    /// added to the `kvm` group. `Opened` results match raw ioctls made
+    /// independently. `Absent` and `OpenFailed` have not occurred live; how
+    /// every state is *reported* is covered by tests in [`crate::report`].
     #[cfg(target_os = "linux")]
     #[must_use]
     pub fn probe() -> Self {

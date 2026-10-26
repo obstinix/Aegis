@@ -185,3 +185,77 @@ fn json_report_keeps_the_documented_shape() {
     assert!(json["verdicts"]["hosted_kvm"]["fix"].is_string());
     assert_eq!(json["virtualization"]["second_level_translation"], "yes");
 }
+
+/// Values from raw `ioctl(2)` calls made with Python `fcntl` on the same host,
+/// independently of `kvm-ioctls` and Aegis (see PROVENANCE.md).
+const RAW_IOCTL_EXTENSIONS: [(&str, bool); 5] = [
+    ("ext_cpuid", true),
+    ("immediate_exit", true),
+    ("irqchip", true),
+    ("pit2", true),
+    ("user_memory", true),
+];
+
+#[test]
+fn wsl2_with_kvm_access_matches_raw_ioctls() {
+    let obs = load("wsl2-ultra9-275hx-kvm");
+    let Some(DevKvm::Opened {
+        api_version,
+        extensions,
+    }) = &obs.dev_kvm
+    else {
+        panic!("expected an opened /dev/kvm, got {:?}", obs.dev_kvm);
+    };
+    // KVM_GET_API_VERSION via raw ioctl returned 12.
+    assert_eq!(*api_version, 12);
+    let expected: std::collections::BTreeMap<String, bool> = RAW_IOCTL_EXTENSIONS
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), *v))
+        .collect();
+    assert_eq!(extensions, &expected);
+}
+
+#[test]
+fn wsl2_with_kvm_access_is_ready_for_both_kvm_paths() {
+    let obs = load("wsl2-ultra9-275hx-kvm");
+    let r = Report::evaluate(&obs);
+    assert!(
+        matches!(r.verdicts.hosted_kvm, Verdict::Ready { .. }),
+        "{:?}",
+        r.verdicts.hosted_kvm
+    );
+    let Verdict::Ready { detail } = &r.verdicts.nested_vmx_testing else {
+        panic!("expected Ready, got {:?}", r.verdicts.nested_vmx_testing);
+    };
+    // Readiness is a capability claim only; no nested guest has run yet.
+    assert!(detail.contains("not yet exercised"), "{detail}");
+    // Same machine and session as the permission-denied capture, except for the group change.
+    let (before, _) = wsl2();
+    let (now, then) = (obs.cpuid.unwrap(), before.cpuid.unwrap());
+    // Not the whole snapshot: leaf 1 EBX[31:24] is the initial APIC ID of the
+    // logical CPU that ran CPUID, and the two captures ran on different cores
+    // (0x13 and 0x0f). Compare the fields that identify the CPU and its features.
+    assert_eq!(now.vendor_bytes(), then.vendor_bytes());
+    assert_eq!(now.brand_bytes(), then.brand_bytes());
+    assert_eq!(now.leaf_1.eax, then.leaf_1.eax);
+    assert_eq!(
+        (now.leaf_1.ecx, now.leaf_1.edx),
+        (then.leaf_1.ecx, then.leaf_1.edx)
+    );
+    assert_eq!(now.hypervisor, then.hypervisor);
+    assert_eq!(
+        obs.linux.as_ref().map(|l| &l.kvm_intel),
+        before.linux.as_ref().map(|l| &l.kvm_intel)
+    );
+    assert_eq!(before.dev_kvm, Some(DevKvm::PermissionDenied));
+}
+
+#[test]
+fn json_report_for_opened_kvm_keeps_the_documented_shape() {
+    let json = serde_json::to_value(Report::evaluate(&load("wsl2-ultra9-275hx-kvm"))).unwrap();
+    assert_eq!(json["kvm"]["dev_kvm"]["state"], "opened");
+    assert_eq!(json["kvm"]["dev_kvm"]["api_version"], 12);
+    assert_eq!(json["kvm"]["dev_kvm"]["extensions"]["irqchip"], true);
+    assert_eq!(json["verdicts"]["hosted_kvm"]["status"], "ready");
+    assert_eq!(json["verdicts"]["nested_vmx_testing"]["status"], "ready");
+}
