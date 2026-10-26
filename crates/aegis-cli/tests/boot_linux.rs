@@ -1,6 +1,6 @@
-//! Roadmap M3 and M4h acceptance tests: boot Linux with `aegis run` (one
-//! vCPU; then two vCPUs with a virtio-console), and check the run-loop
-//! seccomp filter.
+//! Roadmap M3, M4h and M6h acceptance tests: boot Linux with `aegis run`
+//! (one vCPU; two vCPUs with a virtio-console; then host stdin read by the
+//! guest from that console), and check the run-loop seccomp filter.
 //!
 //! The boot tests need `/dev/kvm`, `nasm`, `ld`, and a bzImage. The kernel
 //! comes from `AEGIS_TEST_KERNEL`, or else the WSL2 kernel at
@@ -176,12 +176,31 @@ fn initramfs(init: &str) -> PathBuf {
 
 /// Run `aegis` with `args`, killing it after `limit`.
 fn aegis(args: &[&str], limit: Duration) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_aegis"))
+    aegis_with_stdin(args, limit, None)
+}
+
+/// Run `aegis` with `args`, killing it after `limit`. With `stdin`, those
+/// bytes are written to its stdin, which then stays open (no end of file)
+/// until `aegis` exits: it has to stop on its own.
+fn aegis_with_stdin(args: &[&str], limit: Duration, stdin: Option<&[u8]>) -> Output {
+    use std::io::Write as _;
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_aegis"));
+    command
         .args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+        .stderr(Stdio::piped());
+    if stdin.is_some() {
+        command.stdin(Stdio::piped());
+    }
+    let mut child = command.spawn().unwrap();
+    // Held, not dropped, until the child has exited.
+    let _held_open = stdin.map(|bytes| {
+        let mut pipe = child.stdin.take().unwrap();
+        pipe.write_all(bytes).unwrap();
+        pipe.flush().unwrap();
+        pipe
+    });
     let (mut out, mut err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
     let readers = (
         std::thread::spawn(move || {
@@ -361,6 +380,82 @@ fn boots_two_vcpus_with_a_virtio_console() {
     assert!(run.status.success(), "{report}");
     eprintln!(
         "two vCPUs booted with a virtio-console in {:?}; virtio interrupts per CPU {counts:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+#[ignore = "requires /dev/kvm, nasm, ld and a bzImage with ACPI, SMP and virtio-mmio; run with --include-ignored"]
+fn guest_reads_host_stdin_from_hvc0() {
+    let config = tmp("vm-input.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "memory_mib = 256\nkernel = {:?}\ninitrd = {:?}\nvcpus = 2\nvirtio_console = true\nvirtio_console_stdin = true\n",
+            kernel().display().to_string(),
+            initramfs("init_console_input").display().to_string()
+        ),
+    )
+    .unwrap();
+    let input = b"hello from the host\nsecond line\n";
+
+    let started = Instant::now();
+    // Stdin stays open after the input, so the worker never sees end of
+    // file: the run ends only if the guest's stop also stops the worker.
+    let run = aegis_with_stdin(
+        &["run", "--config", config.to_str().unwrap()],
+        Duration::from_mins(2),
+        Some(input),
+    );
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    let (console, hvc) = stdout
+        .split_once("\n--- virtio-console (hvc0) ---\n")
+        .unwrap_or((&stdout, ""));
+    let report = format!(
+        "status {}\n--- stderr\n{stderr}\n--- hvc0\n{hvc}\n--- UART console (last 3000 bytes)\n{}",
+        run.status,
+        &console[console.len().saturating_sub(3000)..]
+    );
+
+    assert!(console.contains("AEGIS_INPUT_INIT_START"), "{report}");
+    assert!(!console.contains("AEGIS_INPUT_HVC_FAIL"), "{report}");
+    assert!(!console.contains("AEGIS_INPUT_READ_FAIL"), "{report}");
+    assert!(
+        !console.contains("AEGIS_INPUT_TIMEOUT"),
+        "no line within 10 s\n{report}"
+    );
+    assert!(console.contains("AEGIS_INPUT_INIT_DONE"), "{report}");
+    // Both lines reached guest userspace, in order, byte for byte.
+    let first = hvc.find("AEGIS_RX[hello from the host\n]");
+    let second = hvc.find("AEGIS_RX[second line\n]");
+    assert!(
+        matches!((first, second), (Some(a), Some(b)) if a < b),
+        "{report}"
+    );
+    assert!(hvc.contains("AEGIS_RX_END"), "{report}");
+
+    assert!(stderr.contains("stdin goes to hvc0"), "{report}");
+    assert!(
+        stderr.contains(&format!("{} bytes in, 0 pending", input.len())),
+        "every byte was written into a receive buffer\n{report}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "stdin to hvc0: {} bytes forwarded, ended by the guest stopping",
+            input.len()
+        )),
+        "the worker stopped with the guest, not at end of file\n{report}"
+    );
+    assert!(stderr.contains("guest stopped: Shutdown"), "{report}");
+    assert!(stderr.contains(" 0 KVM_IRQ_LINE failures"), "{report}");
+    assert!(!stderr.contains("needs reset"), "{report}");
+    assert!(run.status.success(), "{report}");
+    eprintln!(
+        "guest read {} bytes of host input from hvc0; run took {:?}",
+        input.len(),
         started.elapsed()
     );
 }
