@@ -1,6 +1,6 @@
 # Licensing Review (Phase 2)
 
-- **Observed:** 2026-10-26. Licenses were read from repository license files, SPDX headers, and crates.io metadata for the latest published version. This is an engineering review, **not legal advice**. Items marked ⚠️ need owner review.
+- **Observed:** 2026-10-26; §3.1 and §3.2 on 2026-10-27. Licenses were read from repository license files, SPDX headers, and crates.io metadata for the latest published version. This is an engineering review, **not legal advice**. Items marked ⚠️ need owner review.
 - **Code reused into Aegis so far:** **none.** No third-party source is committed to this repository.
 
 ---
@@ -67,7 +67,7 @@ Everything below assumes **Apache-2.0 outbound**.
 | `mshv-ioctls` | 0.7.1 | Apache-2.0 OR BSD-3-Clause | MSHV backend (optional, later) |
 | `windows-sys` | 0.61.2 | MIT OR Apache-2.0 | WHP backend (later) |
 | `uefi` | 0.41.0 | MIT OR Apache-2.0 | **Not used** (B0): it always depends on `ucs2`, below. Owner decision pending on allowing that. |
-| `ucs2` | 0.3.3 | **MPL-2.0** | **Not used.** Outside the allowlist. MPL-2.0 is file-level copyleft: using it unmodified as a dependency is compatible with Apache-2.0 outbound, but distributed binaries must point to its source, and modified files stay MPL-2.0. Allowing it needs an explicit `deny.toml` exception, which is the owner's call. |
+| `ucs2` | 0.3.3 | **MPL-2.0** | **Not used.** Outside the allowlist. MPL-2.0 is file-level copyleft: using it unmodified as a dependency is compatible with Apache-2.0 outbound, but distributed binaries must point to its source, and modified files stay MPL-2.0. Allowing it needs an explicit `deny.toml` exception, which is the owner's call. Source inspection and options: §3.1. |
 | `uefi-raw` | 0.17.0 | MIT OR Apache-2.0 | Raw UEFI type definitions for `aegis-uefi` (B0, UEFI target only) |
 | `uguid` | 2.2.1 | MIT OR Apache-2.0 | Pulled in by `uefi-raw` |
 | `x86_64` | 0.16.0-rc.0 | MIT/Apache-2.0 | Paging/registers (bare metal) |
@@ -75,7 +75,58 @@ Everything below assumes **Apache-2.0 outbound**.
 | `raw-cpuid` | 11.6.0 | MIT | CPUID decoding |
 | `bitflags`, `log`, `thiserror`, `libc`, `spin` | — | MIT OR Apache-2.0 (spin: MIT) | General |
 
-**All are compatible with Apache-2.0 outbound.** Transitive dependencies weren't resolved, because no `Cargo.lock` exists yet. Phase 4 adds `cargo-deny` with an allowlist (MIT, Apache-2.0, BSD-2/3, ISC, Unicode-3.0, Zlib), so a transitive GPL or no-license crate fails the build. Installing `cargo-deny` needs owner approval.
+**All are compatible with Apache-2.0 outbound.** This table was first written before a `Cargo.lock` existed. Transitive dependencies are now checked mechanically: `cargo deny check` enforces the ADR-0011 allowlist (MIT, Apache-2.0, BSD-2/3, ISC, Unicode-3.0, Zlib) over the whole locked graph with all features, locally and in CI on every push, so a transitive GPL, MPL or unlicensed crate fails the check.
+
+### 3.1 `ucs2` 0.3.3: source inspection (2026-10-27)
+
+What was checked: the crate source as published on crates.io, fetched into a scratch project outside the repository (nothing was added to Aegis), plus `uefi` 0.41.0's manifest and source.
+
+| Question | Finding |
+|---|---|
+| Version | 0.3.3, the latest release. `uefi` 0.41.0 (latest) requires `ucs2 = "0.3.3"`. |
+| Licence metadata | `license = "MPL-2.0"` in `Cargo.toml`. Repository `rust-osdev/ucs2-rs`; published from commit `aa837529a4999e8c7eacb326fd153cc52792814b`. |
+| Licence text | `LICENSE` is the full, unmodified MPL-2.0 text. |
+| Source file headers | None. Neither `src/lib.rs` (227 lines) nor `src/macros.rs` (126 lines) has a licence header. No file carries the Exhibit B "Incompatible With Secondary Licenses" notice; that phrase appears only in the standard licence text itself. |
+| Its own dependencies | `bit_field` 0.10.3 (Apache-2.0/MIT): allowed. |
+| Optional in `uefi`? | **No.** `ucs2` is an unconditional dependency of `uefi` 0.41; no feature removes it. |
+| How `uefi` uses it | In 4 source files. `uefi` re-exports the `ucs2_cstr!` macro, which its own `cstr16!` macro expands to. The text-output protocol's `fmt::Write` implementation calls `ucs2::encode_with`. Both are small UCS-2 encoding helpers. |
+| What Aegis uses today | Nothing. `aegis-uefi` uses `uefi-raw` 0.17.0 (MIT OR Apache-2.0) and does its own UCS-2 conversion. `ucs2` is not in `Cargo.lock`. |
+
+**What allowing it would mean.** MPL-2.0 obligations attach to the `ucs2` files, not to Aegis:
+- Aegis stays Apache-2.0 as a "Larger Work" (MPL-2.0 §3.3).
+- Anyone distributing an `aegis-uefi` binary must tell recipients where to get `ucs2`'s source (§3.2). A `THIRD_PARTY_NOTICES.md` entry naming the crate, version and repository would cover it.
+- A modified copy of a `ucs2` file must stay MPL-2.0, with its source available. Using the crate unmodified from crates.io avoids that.
+
+**Options for the owner.** None of these has been applied, and `deny.toml` is unchanged.
+
+1. **Keep `uefi-raw` only (current state).** No licence change; `aegis-uefi` keeps hand-written wrappers. This is cheap while the UEFI app only prints and powers off. The cost grows with every UEFI protocol later milestones need (memory map, file system, ACPI tables).
+2. **Allow `ucs2` alone and switch to `uefi`.** Add a crate-scoped exception, so that MPL-2.0 does not become generally allowed:
+   ```toml
+   [[licenses.exceptions]]
+   crate = "ucs2"
+   allow = ["MPL-2.0"]
+   ```
+   Then add `THIRD_PARTY_NOTICES.md` before the first binary is distributed, and record the decision as an ADR-0011 note.
+3. **Replace `ucs2` under `uefi`** with a `[patch]` reimplementation. Not recommended: it means maintaining a fork of the crate's API. Cleanly reimplementing a 353-line encoder is also more work than option 1.
+
+**Recommendation:** option 1 until the UEFI side needs protocols that would make hand-written wrappers costly; decide then between 1 and 2. This is an engineering assessment, not legal advice.
+
+### 3.2 Fuzz-only dependencies (2026-10-27)
+
+The `fuzz/` crate (docs/fuzzing.md) is a separate Cargo workspace. Its dependencies are not part of any Aegis binary, and the main workspace's `cargo deny check` does not see them.
+
+| Crate | Version | License | Role |
+|---|---|---|---|
+| `libfuzzer-sys` | 0.4.13 | **(MIT OR Apache-2.0) AND NCSA** (crate metadata) | cargo-fuzz targets only (`--features libfuzzer`). It bundles LLVM's libFuzzer C++ sources; see the note below. |
+| `arbitrary` | 1.5.0 | MIT OR Apache-2.0 | Pulled in by `libfuzzer-sys` |
+| `cc`, `find-msvc-tools`, `jobserver`, `shlex` | 1.10.0 / 0.1.15 / 0.1.35 / 2.0.1 | MIT OR Apache-2.0 | Build-time: compile libFuzzer |
+| `getrandom`, `cfg-if` | 0.4.3 / 1.0.5 | MIT OR Apache-2.0 | Pulled in through `jobserver` |
+
+**`libfuzzer-sys`'s licence, as inspected.**
+- Its `README.md` says: all files in the `libfuzzer` directory are NCSA, and everything else is Apache-2.0 and MIT. The crate metadata follows the README.
+- The bundled files say otherwise. 55 of the 56 files under `libfuzzer/` carry `SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception`, LLVM's licence since its relicensing. The remaining file is `README.txt`, with no tag. No file there mentions NCSA.
+- So the metadata looks out of date. Either way, both licences are permissive: NCSA is the University of Illinois/NCSA licence, BSD-style, and the LLVM exception is to Apache-2.0. The ADR-0011 allowlist names neither NCSA nor `Apache-2.0 WITH LLVM-exception`.
+- cargo-deny goes by the metadata. Running `cargo deny --manifest-path fuzz/Cargo.toml --all-features check licenses` on 2026-10-27 rejected exactly one crate, `libfuzzer-sys`, for NCSA. The fuzzer is a development tool and is never linked into Aegis, so the allowlist, which governs what Aegis ships, does not need to change. If the owner wants the fuzz crate held to the same check, the narrow fix is a `libfuzzer-sys`-scoped exception in a fuzz-only deny configuration.
 
 ---
 
