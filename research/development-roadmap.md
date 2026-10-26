@@ -23,7 +23,7 @@
 |---|---|---|---|---|---|
 | **M0** | Workspace skeleton | Cargo workspace with `aegis-core` holding real code and tests. Each other ADR-0003 crate is added when its milestone starts, so no empty placeholder crates. Toolchain pinned to 1.97.0. `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace` pass on Windows and in WSL2. `deny.toml` allowlist present and `cargo deny check` passes. `aegis-core` builds for `x86_64-unknown-uefi`. | Windows + WSL2 | — | **done (tested: Windows 1.97.0-msvc; WSL2 Ubuntu 24.04 1.97.0-linux-gnu)**. See M0 detail below. |
 | **M1** | `aegis doctor` | Reports: CPU vendor/model; VMX/SVM; EPT/NPT and the VMX feature list (Linux: `/proc/cpuinfo` `vmx flags`); `/dev/kvm` presence **and whether it opens**; `KVM_GET_API_VERSION` and key `KVM_CHECK_EXTENSION` results; `kvm_intel` nested/ept/unrestricted_guest; CPU vulnerability status. `--json` emits a versioned schema. Unit tests use fixtures captured from this workstation's WSL2 (including the current "permission denied" case). On Windows it reports "hosted KVM unsupported; Hyper-V active" truthfully. | WSL2, Windows | M0 | **done (tested: Windows 1.97.0-msvc; WSL2 Ubuntu 24.04 1.97.0-linux-gnu, with and without `/dev/kvm` access)**. See M1 detail below. |
-| **M2** | KVM: first guest | Creates a VM with 2 MiB of guest RAM; loads `tests/guests/hello16.asm` (real mode: `out 0x3F8` of a known string, then `hlt`); runs one vCPU. Asserts the exact IO-exit sequence and the final `Hlt`. Lifecycle reaches `Destroyed`; all fds closed (checked via `/proc/self/fd`). A negative test: a guest writing to an unassigned port is logged and the VM continues per policy; an unknown exit stops the VM with diagnostics. | WSL2 KVM | M1 | not started |
+| **M2** | KVM: first guest | Creates a VM with 2 MiB of guest RAM; loads `tests/guests/hello16.asm` (real mode: `out 0x3F8` of a known string, then `hlt`); runs one vCPU. Asserts the exact IO-exit sequence and the final `Hlt`. Lifecycle reaches `Destroyed`; all fds closed (checked via `/proc/self/fd`). A negative test: a guest writing to an unassigned port is logged and the VM continues per policy; an unknown exit stops the VM with diagnostics. | WSL2 KVM | M1 | **in progress**: backend-neutral half done and tested (see M2 detail below). KVM backend (`aegis-kvm`) **not started**, paused by owner instruction 2026-10-26. |
 | **M3** | KVM: boot Linux | `linux-loader` loads a bzImage + initramfs from paths in `vm.toml`. In-kernel irqchip + PIT2; 16550 UART. The guest prints a marker from init to the serial console within a timeout. The VMM installs a seccomp allowlist after setup; a test shows a forbidden syscall kills the process. Memory cap enforced. | WSL2 KVM | M2 | not started |
 | M4h | KVM: multi-vCPU + virtio | 2+ vCPUs boot Linux; virtio-blk over MMIO with a read-only image; fuzz targets for the device register paths | WSL2 KVM | M3 | not started |
 | M5h | PyxisOS Track A validation | M3 tests rerun on the ThinkPad X1 Carbon (i7-7600U). Results are recorded in `compatibility-matrix.md` as hardware-tested. | Physical hardware | M3; owner runs it on that machine | not started |
@@ -60,6 +60,18 @@ Windows results were rerun from a clean build on the pinned `1.97.0-x86_64-pc-wi
 | Windows reports hosted KVM unsupported, Hyper-V active | **done**: "UNSUPPORTED" plus a note that Hyper-V (`Microsoft Hv`) hides VMX from the OS |
 | Checks | fmt; 47/47 tests; clippy `-D warnings` (Windows host, Linux host, `no_std` none + uefi for `aegis-core` and `aegis-probe`); docs `-D warnings`; `cargo deny check`. All pass on Windows (1.97.0-msvc) and WSL2 (1.97.0-linux-gnu). |
 | New dependencies | `serde` 1.0.229, `serde_json` 1.0.154 (pulls `zmij`, `itoa`, `memchr`), `kvm-ioctls` 0.25.1 (Linux only; pulls `kvm-bindings`, `vmm-sys-util`, `libc`, `bitflags` 1 + 2). 17 external crates, all MIT / Apache-2.0 / BSD-3-Clause. `cargo deny` warns about the duplicate `bitflags`, which comes from upstream `vmm-sys-util`. |
+
+### M2 detail (2026-10-26, partial)
+
+| Part | Status |
+|---|---|
+| Backend interface (`Vcpu`, `PortIo`) and dispatch loop (`run_vcpu`) in `aegis-core` | **done**: tested with the scripted mock backend. Covers normal stop, shutdown, unassigned ports, unknown exit, unhandled MMIO, backend error, exit limit and refusal when not running. 8 tests. |
+| Port bus (`PortBus`) with the unassigned-port policy | **done**: 4 unit tests (routing, all-ones reads, logging cap, range validation) |
+| 16550 UART (`aegis-devices`, transmit-only, output capped) | **done**: 5 unit tests + 1 bus/mock integration test |
+| NASM test guests `hello16`, `unassigned_port`, `mmio_unmapped` (`tests/guests/`) | **written**: assembled with NASM 2.16.01 `-w+all` (no warnings) and checked with `ndisasm`. **Not yet run under KVM**; no test assembles them yet. |
+| `aegis-kvm` (KVM backend, real-mode vCPU setup, guest memory via `vm-memory`) | **not started**, paused by owner instruction. A local scaffold was moved out of the repository uncommitted, and its candidate dependencies (`kvm-bindings` as a direct dependency, `vm-memory` 0.18.0) were removed from the workspace. |
+| KVM acceptance tests (exit sequence, lifecycle to `Destroyed`, fd leak check, negative tests) | **not started** |
+| Checks | fmt; 68/68 tests; clippy `-D warnings` (host, plus `no_std` none and uefi for `aegis-core`, `aegis-devices`, `aegis-probe`); docs `-D warnings`; `cargo deny check`. All pass on Windows and WSL2. |
 
 ## Track B: bare metal (VMX, UEFI)
 

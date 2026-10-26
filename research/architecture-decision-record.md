@@ -154,6 +154,12 @@ pyxforge.toml      PyxForge build/QEMU/GDB profiles (ADR-0009 integration point)
 
 The final signatures are fixed in M0 code review, not here.
 
+**As implemented (M2, backend-neutral part).** The sketch above was revised:
+- **Port I/O inside `run`.** `Vcpu::run(&mut self, io: &mut dyn PortIo) -> Result<VmExit, Self::Error>` serves port I/O itself, before the guest resumes. KVM (and VMX) need a port read's result before the next VM entry, and `kvm-ioctls` exposes the I/O data only for the duration of the exit. The exit is still returned, so every exit is traced.
+- **Dispatch loop.** `run_vcpu(vcpu, io, lifecycle, limits)` loops over exits and moves the lifecycle to `Stopped` (HLT, shutdown) or `Failed` (unhandled MMIO, unhandled exit, exit limit, backend error). It returns a `RunOutcome`: the stop reason, an exit count, and a bounded trace.
+- **Port bus.** `PortBus` borrows its `PortDevice`s. Unassigned ports read as all ones and drop writes; both are logged, and the guest continues.
+- **Not built yet.** No `VmConfig`, `Backend` or `pause` exists yet. They arrive with the KVM backend, so their shape can be checked against a real implementation.
+
 ## ADR-0008: Devices and interrupts
 
 **Decision.**

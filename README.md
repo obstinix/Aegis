@@ -29,7 +29,8 @@ written to understand, and then own, the boundary between hardware and execution
 | ---------------------------- | --------------- |
 | Architecture & design docs   | 🟡 In progress  |
 | Build system / toolchain     | 🟢 Done (M0): Rust 1.97.0 pinned; fmt, clippy, tests, docs, `no_std`/UEFI builds and `cargo deny check` pass on Windows and WSL2. No CI yet. |
-| `aegis-core` (lifecycle, memory map, exit model) | 🟡 Implemented, unit-tested (22 tests on Windows and Linux). Not used by any backend yet. |
+| `aegis-core` (lifecycle, memory map, exit model, backend interface, port bus, dispatch loop) | 🟡 Implemented; 34 tests on Windows and Linux, driven by a scripted mock backend. No real backend uses it yet. |
+| `aegis-devices` (16550 UART, transmit-only) | 🟡 Implemented; 6 tests on Windows and Linux (mock backend). Not yet driven by a real guest. |
 | `aegis doctor` capability report | 🟢 Done (M1): tested live and with fixtures on Windows and WSL2, including KVM API version and extension queries. |
 | Hosted KVM backend (stage 1) | ⚪ Not started  |
 | VMX / SVM capability checks  | ⚪ Not started  |

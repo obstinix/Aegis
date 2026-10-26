@@ -100,3 +100,20 @@ Honest record of how work was done, including AI assistance. Commit metadata sta
   - **A first draft of one test was wrong.** It compared whole CPUID snapshots between the two WSL2 captures, but leaf 1 EBX[31:24] is the initial APIC ID of whichever logical CPU ran CPUID (`0x13` vs `0x0f`). The assertion now compares vendor, brand, signature, feature flags and hypervisor leaf, with a comment explaining why.
   - **Checks:** all pass on Windows and WSL2.
   - **Status docs:** stale "blocked by `kvm` group" entries are updated in the README, roadmap (M1 done; M2, M3 and B0 now just "not started"), compatibility matrix, ADR-0004, the landscape report and `kvm.rs`. Earlier devlog entries are left as history.
+
+## 2026-10-26: Phase 4, M2 (partial: backend-neutral half)
+
+- **Assistance:** Claude Code (model `claude-opus-5-5`), same session. Code was written by the assistant from the ADRs and the 16550 register layout, with no third-party code copied. The `kvm-ioctls` 0.25.1 source was read to confirm its exit variants and the safety contract of `set_user_memory_region`.
+- **Added:**
+  - In `aegis-core`: the `Vcpu`/`PortIo` backend interface, the `PortBus` port bus with the unassigned-port policy, the `run_vcpu` dispatch loop with exit limits and a bounded trace, and a scripted mock backend (feature `mock`).
+  - `aegis-devices`, with a transmit-only, output-capped 16550 UART.
+  - Three NASM test guests in `tests/guests/`.
+  - 34 new tests, 68 in total.
+- **Issues found during development:**
+  - A trait-object lifetime error in `PortBus::route`, fixed by naming `dyn PortDevice + 'd`.
+  - A bus test lent one device twice; each attempt now gets its own device, because a lent device stays borrowed for the bus's lifetime.
+  - Clippy `collapsible_if`, fixed with an edition-2024 `let` chain.
+  - `io_exit`, a panicking test helper, was moved out of the public backend API into the mock module.
+- **Design note:** port I/O is served inside `Vcpu::run`. ADR-0007 now has an "as implemented" note explaining why.
+- **Paused by owner:** before `aegis-kvm` existed, the owner told me to stop, commit and push. A local `aegis-kvm` scaffold (a manifest and a one-line placeholder) and its workspace dependencies (`kvm-bindings`, `vm-memory` 0.18.0) were backed out uncommitted. The scaffold was moved to the session scratch directory, not deleted.
+- **Not done:** the KVM backend; running the NASM guests; the KVM acceptance tests.
