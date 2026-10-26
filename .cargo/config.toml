@@ -1,3 +1,8 @@
+# `cargo xtask <command>` runs the repository's build and test orchestration
+# (xtask/, ADR-0003).
+[alias]
+xtask = "run --package xtask --"
+
 # Reproducible UEFI images. lld-link otherwise stamps the build time into the
 # PE header and a per-build PDB reference and ID into a debug directory, so
 # two builds of the same source differ. /Brepro removes the timestamp and
