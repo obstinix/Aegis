@@ -52,6 +52,7 @@ Hosted (stage 1)                          Bare metal (stage 2)
 ### 3.1 Hosted VMM process
 - Runs **unprivileged**. Access to `/dev/kvm` comes through group membership only, never root. (This is exactly why the WSL user currently can't open `/dev/kvm`: correct behavior that the owner must grant deliberately.)
 - After setup, applies a **seccomp allowlist** (`seccompiler`) covering only the syscalls the run loop needs. A test asserts that a forbidden syscall kills the process.
+  - *Status (M3):* implemented in `aegis-kvm::seccomp` and installed by `aegis run` immediately before the run loop. Mismatch kills the process. `ioctl` is limited to `KVM_RUN`, `write` to fds 1 and 2, and `fcntl` to `F_GETFD`, which Rust std's debug builds issue when dropping fds (found with gdb after the filter killed a debug build at teardown). Verified: `aegis selftest seccomp` dies by `SIGSYS`; a full Linux boot runs under the filter; a mutant filter without `KVM_RUN` is killed on the first `KVM_RUN`.
 - No network, no filesystem writes outside an explicitly named run directory. Later: optional namespace/jailer, as in Firecracker.
 - Minimal default device set: **one serial port**. Everything else is opt-in.
 

@@ -32,7 +32,7 @@ written to understand, and then own, the boundary between hardware and execution
 | `aegis-core` (lifecycle, memory map, exit model, backend interface, port bus, dispatch loop) | 🟡 Implemented; 34 tests on Windows and Linux, driven by a scripted mock backend. No real backend uses it yet. |
 | `aegis-devices` (16550 UART, transmit-only) | 🟡 Implemented; 6 tests (mock backend), and driven by real KVM guests in the `aegis-kvm` tests. |
 | `aegis doctor` capability report | 🟢 Done (M1): tested live and with fixtures on Windows and WSL2, including KVM API version and extension queries. |
-| Hosted KVM backend (stage 1) | 🟡 M2 done: runs real-mode test guests under KVM (tested in WSL2). Linux boot (M3) not started. |
+| Hosted KVM backend (stage 1) | 🟡 M3 done: `aegis run --config vm.toml` boots a Linux bzImage + initramfs to `/init` under KVM, with in-kernel irqchip/PIT, a UART console and a seccomp allowlist (tested in WSL2). Single vCPU; no virtio yet (M4h). |
 | VMX / SVM capability checks  | ⚪ Not started  |
 | VMX operation (VMXON)        | ⚪ Not started  |
 | First guest (VMLAUNCH)       | ⚪ Not started  |

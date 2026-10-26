@@ -137,3 +137,24 @@ Honest record of how work was done, including AI assistance. Commit metadata sta
   - Broken intra-doc links on Windows, where the crate is empty but its docs still render.
   - A safety check blocked a scratch-directory `rm -rf` through a shell variable; I worked around it with a fresh directory and nothing was deleted. The old scratch directories `kvm-mutant-*` and `wt-target` are still in the session scratchpad, for the owner to remove if wanted.
 - **Not done:** a live unknown-exit test (mock only); M3 (Linux boot). No push yet; awaiting owner approval.
+
+## 2026-10-26: Phase 4, M3 (Linux boot under KVM)
+
+- **Assistance:** Claude Code (model `claude-opus-5-5`), same session. Boot-protocol code was written from `Documentation/arch/x86/boot.rst`, with no third-party code copied. The `seccompiler` 0.5 and `linux-loader` 0.14 sources were read to confirm their APIs.
+- **Kernel:** the WSL2 kernel already on the machine (`C:\Program Files\WSL\tools\kernel`, 6.18.33.2). Its `/proc/config.gz` confirmed 8250 console, initramfs and KVM guest support, so nothing was downloaded.
+- **Design decisions:**
+  - Dropped `linux-loader` in favor of a byte-level zero page, with no `unsafe` (ADR-0004 note).
+  - GDT selectors follow the protocol's `__BOOT_CS` 0x10 / `__BOOT_DS` 0x18. My first draft used Firecracker's 0x08/0x10; I corrected it before running.
+  - The boot runs as a real `aegis run` process, so it can be timed out and sandboxed.
+  - `/init` writes to `/dev/kmsg`, because the UART raises no interrupts.
+- **Seccomp finding:** the first boot was killed by the filter at teardown, on `syscall=72` (`fcntl`) from the audit log.
+  - A scratch copy with a log-only filter showed `fcntl` was the only violation, and that Linux otherwise booted fully.
+  - gdb `catch syscall fcntl` traced all three calls to `fcntl(fd, F_GETFD)` in Rust std's `debug_assert_fd_is_open` when dropping the VM, vCPU and `/dev/kvm` fds.
+  - Fix: allow `fcntl` only with `F_GETFD`.
+- **Result:** Linux boots to `/init` and prints `AEGIS_M3_INIT_OK` through the UART under the enforcing filter, in about 2.5–3 s. Mutation checks (changed marker; filter without `KVM_RUN`) fail as expected.
+- **Other fixes:**
+  - Several clippy findings (`ExtINT` backticks, a useless conversion, `format_push_string`, `cmp_owned`, test-helper arithmetic, `Duration::from_mins`).
+  - A test closure returning a borrow of a local.
+  - Two scripted edits that failed on quoting were redone with exact-match edits.
+  - Apparent escaped bytes in the boot log were a `grep` quoting artifact; a Python scan found none.
+- **Not done:** UART interrupts, streamed console output, SMP, virtio (M4h). No push yet.

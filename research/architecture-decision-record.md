@@ -106,6 +106,7 @@ pyxforge.toml      PyxForge build/QEMU/GDB profiles (ADR-0009 integration point)
 - Aegis owns the device models and the VMM process hardening.
 - WHP support (Windows host) is a separate later backend, modeled on Hyperlight's approach and added only once it can be tested.
 - **Blocker (resolved 2026-10-26):** the WSL user had to be added to the `kvm` group before any test could run. The owner did this, and `aegis doctor` confirms `/dev/kvm` opens.
+- **M3 note: `linux-loader` not used.** `linux-loader` 0.14 leaves `ByteValued` for `boot_params` to the VMM, which means an `unsafe impl` (Firecracker does this). Instead, `aegis-kvm::boot` follows `Documentation/arch/x86/boot.rst` directly: it copies the setup-header *bytes* from the bzImage into the zero page and patches documented offsets. That needs no `unsafe` and no extra dependency. The cost is owning ~200 lines of protocol code, covered by unit tests on synthetic images and the live boot test.
 
 ## ADR-0005: Bare-metal core: UEFI application, Intel VMX first
 

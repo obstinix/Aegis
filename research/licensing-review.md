@@ -52,7 +52,11 @@ Everything below assumes **Apache-2.0 outbound**.
 | `vm-memory` | 0.18.0 (in use since M2; 0.17.2 is a compatibility shim over 0.18) | Apache-2.0 OR BSD-3-Clause | Guest memory abstraction (`backend-mmap`) |
 | `thiserror`, `thiserror-impl` | 2.0.21 | MIT OR Apache-2.0 | Pulled in by `vm-memory` |
 | `winapi` (+ two `-gnu` helper crates) | 0.3.9 / 0.4.0 | MIT OR Apache-2.0 | Locked as `vm-memory`'s Windows-only dependency; never compiled, since `aegis-kvm` builds `vm-memory` only on Linux |
-| `linux-loader` | 0.14.0 | Apache-2.0 AND BSD-3-Clause | bzImage/ELF loading, boot params |
+| `linux-loader` | 0.14.0 | Apache-2.0 AND BSD-3-Clause | **Not used** (M3 decision, ADR-0004 note) |
+| `seccompiler` | 0.5.0 | Apache-2.0 OR BSD-3-Clause | Seccomp BPF filter for the run loop (M3) |
+| `toml` (+ `toml_parser`, `toml_datetime`, `toml_writer`, `serde_spanned`) | 1.1.x | MIT OR Apache-2.0 | `vm.toml` parsing (M3) |
+| `winnow` | 1.0.4 | MIT | TOML parser internals |
+| `indexmap`, `hashbrown`, `equivalent` | 2.14.2 / 0.17.1 / 1.0.3 | MIT OR Apache-2.0 (indexmap: Apache-2.0 OR MIT) | Pulled in by `toml` |
 | `virtio-queue` | 0.18.0 | Apache-2.0 AND BSD-3-Clause | virtio (later milestones) |
 | `vm-device` | 0.1.0 | Apache-2.0 OR BSD-3-Clause | Device bus |
 | `seccompiler` | 0.5.0 | Apache-2.0 OR BSD-3-Clause | Seccomp filters for the VMM |
