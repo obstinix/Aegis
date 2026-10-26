@@ -44,3 +44,15 @@ Honest record of how work was done, including AI assistance. Commit metadata sta
 - **Proposed, awaiting the owner:** ADR-0011 (add a `LICENSE` file) and ADR-0012 (canonical home relative to `PyxisOS/native/aegis`).
 - **Process note:** the five Phase 1 and Phase 2 commits didn't use the Conventional Commits format that the README's Contributing section asks for. They are left as-is, since rewriting history needs owner authorization. Phase 3 commits onward use it.
 - **Not done:** no code, no pushes, no installs.
+
+## 2026-10-26: Phase 4, M0 (Windows)
+
+- **Assistance:** Claude Code (model `claude-opus-5-5`), same session. Code was written by the assistant from the ADRs, with no third-party code consulted or copied.
+- **Written:** Cargo workspace and `crates/aegis-core`:
+  - `lifecycle.rs`: state machine. Tests check all 49 state/event pairs against an explicit table.
+  - `memory.rs`: guest memory map with alignment, overflow, overlap, cap, bounds and permission checks.
+  - `exit.rs`: VM-exit model with access-size validation and write-value masking.
+  - The crate is `no_std`, `forbid(unsafe_code)`, and has 22 unit tests.
+- **Bug found by a test:** `MmioAccess::new` rejected a valid 8-byte access ending at `u64::MAX`, because it checked the exclusive end (2^64). Fixed to check the inclusive last byte. The test was kept as written.
+- **Verified on Windows:** fmt, clippy `-D warnings` (pedantic + `arithmetic_side_effects`), tests (22/22), docs `-D warnings`, `no_std` build for `x86_64-unknown-none`.
+- **Not done (owner approval needed):** `x86_64-unknown-uefi` target install, `rust-toolchain.toml` pin, `cargo-deny`, Rust in WSL2. M0 stays "in progress".

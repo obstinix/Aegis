@@ -28,7 +28,8 @@ written to understand, and then own, the boundary between hardware and execution
 | Area                         | State           |
 | ---------------------------- | --------------- |
 | Architecture & design docs   | 🟡 In progress  |
-| Build system / toolchain     | ⚪ Not started  |
+| Build system / toolchain     | 🟡 In progress: Cargo workspace builds and tests on Windows; UEFI target, toolchain pin and WSL2 pending |
+| `aegis-core` (lifecycle, memory map, exit model) | 🟡 Implemented, unit-tested (22 tests, Windows). Not used by any backend yet. |
 | `aegis doctor` capability report | ⚪ Not started  |
 | Hosted KVM backend (stage 1) | ⚪ Not started  |
 | VMX / SVM capability checks  | ⚪ Not started  |

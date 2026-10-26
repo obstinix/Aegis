@@ -21,12 +21,27 @@
 
 | # | Milestone | Acceptance criteria | Environment | Depends on | Status |
 |---|---|---|---|---|---|
-| **M0** | Workspace skeleton | The ADR-0003 crates exist, with real (minimal) code, no stubs claiming function. `rust-toolchain.toml` pins 1.97.0. `cargo fmt --check`, `cargo clippy --workspace -- -D warnings` and `cargo test --workspace` pass on Windows and in WSL2. `deny.toml` allowlist is present, and `cargo deny check` passes, if the owner approves installing `cargo-deny`. `aegis-core` builds for `x86_64-unknown-uefi` (proves `no_std`). | Windows + WSL2 | Rust in WSL2 (owner-approved install) | not started |
+| **M0** | Workspace skeleton | Cargo workspace with `aegis-core` holding real code and tests. Each other ADR-0003 crate is added when its milestone starts, so no empty placeholder crates. Toolchain pinned to 1.97.0. `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace` pass on Windows and in WSL2. `deny.toml` allowlist present and `cargo deny check` passes, once `cargo-deny` is approved. `aegis-core` builds for `x86_64-unknown-uefi`. | Windows + WSL2 | Owner approvals: UEFI target, toolchain pin, `cargo-deny`, Rust in WSL2 | **in progress** (see M0 detail below) |
 | **M1** | `aegis doctor` | Reports: CPU vendor/model; VMX/SVM; EPT/NPT and the VMX feature list (Linux: `/proc/cpuinfo` `vmx flags`); `/dev/kvm` presence **and whether it opens**; `KVM_GET_API_VERSION` and key `KVM_CHECK_EXTENSION` results; `kvm_intel` nested/ept/unrestricted_guest; CPU vulnerability status. `--json` emits a versioned schema. Unit tests use fixtures captured from this workstation's WSL2 (including the current "permission denied" case). On Windows it reports "hosted KVM unsupported; Hyper-V active" truthfully. | WSL2, Windows | M0 | not started |
 | **M2** | KVM: first guest | Creates a VM with 2 MiB of guest RAM; loads `tests/guests/hello16.asm` (real mode: `out 0x3F8` of a known string, then `hlt`); runs one vCPU. Asserts the exact IO-exit sequence and the final `Hlt`. Lifecycle reaches `Destroyed`; all fds closed (checked via `/proc/self/fd`). A negative test: a guest writing to an unassigned port is logged and the VM continues per policy; an unknown exit stops the VM with diagnostics. | WSL2 KVM | M1; **owner adds WSL user to `kvm` group** | blocked (`kvm` group) |
 | **M3** | KVM: boot Linux | `linux-loader` loads a bzImage + initramfs from paths in `vm.toml`. In-kernel irqchip + PIT2; 16550 UART. The guest prints a marker from init to the serial console within a timeout. The VMM installs a seccomp allowlist after setup; a test shows a forbidden syscall kills the process. Memory cap enforced. | WSL2 KVM | M2 | blocked (`kvm` group) |
 | M4h | KVM: multi-vCPU + virtio | 2+ vCPUs boot Linux; virtio-blk over MMIO with a read-only image; fuzz targets for the device register paths | WSL2 KVM | M3 | not started |
 | M5h | PyxisOS Track A validation | M3 tests rerun on the ThinkPad X1 Carbon (i7-7600U). Results are recorded in `compatibility-matrix.md` as hardware-tested. | Physical hardware | M3; owner runs it on that machine | not started |
+
+### M0 detail (2026-10-26, Windows host, rustc 1.97.0 `stable-x86_64-pc-windows-gnu`)
+
+| Criterion | Result |
+|---|---|
+| Workspace + `aegis-core` (lifecycle, guest memory map, VM-exit model) | done |
+| `cargo test --workspace` | **passed** on Windows: 22 unit tests, 0 failed |
+| `cargo clippy --workspace --all-targets -- -D warnings` (pedantic + `arithmetic_side_effects`) | **passed** on Windows |
+| `cargo fmt --all --check` | **passed** |
+| `cargo doc` with `-D warnings` | **passed** |
+| `no_std` proof: build and clippy for `x86_64-unknown-none` (installed target) | **passed** |
+| Build for `x86_64-unknown-uefi` | **not run**: target not installed (`E0463`). Needs owner approval for `rustup target add x86_64-unknown-uefi`. |
+| Toolchain pin (`rust-toolchain.toml`) | **not done**: pinning `1.97.0` would download a separately named toolchain. `rust-version = "1.97"` is set in `Cargo.toml` meanwhile. Needs owner approval. |
+| `cargo deny check` | **not run**: `cargo-deny` not installed. No dependencies exist yet. |
+| Same checks in WSL2 | **not run**: no Rust in WSL2 |
 
 ## Track B: bare metal (VMX, UEFI)
 
