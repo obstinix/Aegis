@@ -12,7 +12,8 @@
 //! It also defines:
 //! - the backend interface ([`Vcpu`], [`GuestIo`]);
 //! - the device bus for port I/O and MMIO ([`DeviceBus`]), with the traits
-//!   devices use to reach guest memory and interrupt lines;
+//!   devices use to reach guest memory and interrupt lines, and to deliver
+//!   console output as it is produced ([`OutputSink`]);
 //! - the dispatch loops: [`run_vcpu`] for one vCPU (M2), and
 //!   [`run_vcpu_until`] plus [`vm_stop_event`] for SMP guests (M4h).
 //!
@@ -37,7 +38,7 @@ pub use backend::{
 };
 pub use bus::{
     BusError, DeviceBus, GuestAccessError, GuestMemoryAccess, InterruptLine, MmioDevice,
-    PortDevice, UnassignedLog,
+    OutputSink, PortDevice, UnassignedLog,
 };
 
 pub use exit::{AccessSize, InvalidAccessSize, IoAccess, MmioAccess, VmExit};

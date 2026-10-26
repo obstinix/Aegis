@@ -8,10 +8,12 @@
 //!   one may be partly filled, and its used length says how much. A buffer
 //!   is taken from the ring only when there is input for it, so posted
 //!   buffers wait for input instead of being returned empty.
-//! - Queue 1, `transmitq`: guest-to-host. Device-readable buffers are
-//!   appended to the output, which is capped at
-//!   [`VirtioConsole::DEFAULT_CAPACITY`] bytes; excess is counted and
-//!   dropped. Every chain is returned to the used ring with length 0.
+//! - Queue 1, `transmitq`: guest-to-host. Device-readable buffers go to the
+//!   console's [`OutputSink`]. The default sink, [`CappedBuffer`], keeps at
+//!   most [`VirtioConsole::DEFAULT_CAPACITY`] bytes and counts the excess. A
+//!   host that streams the console passes its own sink to
+//!   [`VirtioConsole::with_sink`]. Every chain is returned to the used ring
+//!   with length 0.
 //!
 //! **Input waits for the guest's first write to the port.** Linux's
 //! virtio-console driver without `VIRTIO_CONSOLE_F_MULTIPORT` posts its
@@ -33,12 +35,12 @@
 
 use alloc::collections::VecDeque;
 use alloc::vec;
-use alloc::vec::Vec;
 
-use aegis_core::{AccessSize, GuestMemoryAccess, InterruptLine};
+use aegis_core::{AccessSize, GuestMemoryAccess, InterruptLine, OutputSink};
 
 use super::queue::{QueueError, SplitQueue};
 use super::{VirtioDevice, VirtioMmio};
+use crate::output::CappedBuffer;
 
 /// Virtio device ID for console.
 pub const DEVICE_ID: u32 = 3;
@@ -48,13 +50,11 @@ pub const RECEIVEQ: usize = 0;
 pub const TRANSMITQ: usize = 1;
 const QUEUE_SIZE: u16 = 256;
 
-/// A virtio console whose guest output is collected in memory and whose
-/// input comes from the host.
+/// A virtio console whose guest output goes to `S` and whose input comes
+/// from the host.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VirtioConsole {
-    output: Vec<u8>,
-    capacity: usize,
-    dropped: u64,
+pub struct VirtioConsole<S = CappedBuffer> {
+    sink: S,
     input: VecDeque<u8>,
     input_capacity: usize,
     delivered: u64,
@@ -87,16 +87,39 @@ impl VirtioConsole {
     /// `input` bytes of undelivered input.
     #[must_use]
     pub fn with_limits(output: usize, input: usize) -> Self {
+        Self::with_sink(CappedBuffer::new(output), input)
+    }
+
+    /// Bytes the guest transmitted (up to the cap).
+    #[must_use]
+    pub fn output(&self) -> &[u8] {
+        self.sink.bytes()
+    }
+
+    /// Bytes dropped because the cap was reached.
+    #[must_use]
+    pub const fn dropped(&self) -> u64 {
+        self.sink.dropped()
+    }
+}
+
+impl<S> VirtioConsole<S> {
+    /// A console whose output goes to `sink`, holding at most
+    /// `input_capacity` bytes of undelivered input.
+    pub fn with_sink(sink: S, input_capacity: usize) -> Self {
         Self {
-            output: Vec::new(),
-            capacity: output,
-            dropped: 0,
+            sink,
             input: VecDeque::new(),
-            input_capacity: input,
+            input_capacity,
             delivered: 0,
             port_open: false,
             receive_requested: false,
         }
+    }
+
+    /// The output sink.
+    pub const fn sink(&self) -> &S {
+        &self.sink
     }
 
     /// Whether the guest has written to the port since the last reset,
@@ -104,18 +127,6 @@ impl VirtioConsole {
     #[must_use]
     pub const fn port_open(&self) -> bool {
         self.port_open
-    }
-
-    /// Bytes the guest transmitted (up to the cap).
-    #[must_use]
-    pub fn output(&self) -> &[u8] {
-        &self.output
-    }
-
-    /// Bytes dropped because the cap was reached.
-    #[must_use]
-    pub const fn dropped(&self) -> u64 {
-        self.dropped
     }
 
     /// Queue host input for the guest. Takes as many leading bytes of `data`
@@ -140,15 +151,9 @@ impl VirtioConsole {
     pub const fn delivered_input(&self) -> u64 {
         self.delivered
     }
+}
 
-    fn append(&mut self, data: &[u8]) {
-        let room = self.capacity.saturating_sub(self.output.len());
-        let keep = data.len().min(room);
-        self.output.extend_from_slice(&data[..keep]);
-        let lost = u64::try_from(data.len().saturating_sub(keep)).unwrap_or(u64::MAX);
-        self.dropped = self.dropped.saturating_add(lost);
-    }
-
+impl<S: OutputSink> VirtioConsole<S> {
     fn transmit(
         &mut self,
         queue: &mut SplitQueue,
@@ -161,7 +166,7 @@ impl VirtioConsole {
                 let len = usize::try_from(buffer.len).map_err(|_| QueueError::ChainTooLarge)?;
                 let mut data = vec![0u8; len];
                 mem.read(buffer.addr, &mut data)?;
-                self.append(&data);
+                self.sink.output(&data);
             }
             queue.push_used(mem, chain.head, 0)?;
             returned = true;
@@ -224,7 +229,7 @@ impl VirtioConsole {
     }
 }
 
-impl VirtioDevice for VirtioConsole {
+impl<S: OutputSink> VirtioDevice for VirtioConsole<S> {
     fn device_id(&self) -> u32 {
         DEVICE_ID
     }
@@ -267,7 +272,7 @@ impl VirtioDevice for VirtioConsole {
     }
 }
 
-impl<M: GuestMemoryAccess, I: InterruptLine> VirtioMmio<VirtioConsole, M, I> {
+impl<S: OutputSink, M: GuestMemoryAccess, I: InterruptLine> VirtioMmio<VirtioConsole<S>, M, I> {
     /// Offer host input to the guest: queue what fits (see
     /// [`VirtioConsole::queue_input`]), then process the receive queue, which
     /// fills any posted buffers and raises the used-buffer interrupt. Returns
@@ -330,18 +335,18 @@ mod tests {
     const BUFS: u64 = 0x8000;
     const SIZE: u16 = 8;
 
-    type Dev<'a> = VirtioMmio<VirtioConsole, &'a VecMemory, &'a RecordingLine>;
+    type Dev<'a, S = CappedBuffer> = VirtioMmio<VirtioConsole<S>, &'a VecMemory, &'a RecordingLine>;
 
-    fn w(dev: &mut Dev<'_>, offset: u64, value: u64) {
+    fn w<S: OutputSink>(dev: &mut Dev<'_, S>, offset: u64, value: u64) {
         dev.write(offset, AccessSize::Dword, value);
     }
 
-    fn r(dev: &mut Dev<'_>, offset: u64) -> u64 {
+    fn r<S: OutputSink>(dev: &mut Dev<'_, S>, offset: u64) -> u64 {
         dev.read(offset, AccessSize::Dword)
     }
 
     /// Reset, then negotiate `VIRTIO_F_VERSION_1` up to `FEATURES_OK`.
-    fn handshake(dev: &mut Dev<'_>) {
+    fn handshake<S: OutputSink>(dev: &mut Dev<'_, S>) {
         let ack_driver = u64::from(status::ACKNOWLEDGE | status::DRIVER);
         w(dev, STATUS, 0);
         w(dev, STATUS, ack_driver);
@@ -350,7 +355,7 @@ mod tests {
         w(dev, STATUS, ack_driver | u64::from(status::FEATURES_OK));
     }
 
-    fn configure(dev: &mut Dev<'_>, index: u64, ring: Ring) {
+    fn configure<S: OutputSink>(dev: &mut Dev<'_, S>, index: u64, ring: Ring) {
         w(dev, QUEUE_SEL, index);
         w(dev, QUEUE_NUM, u64::from(SIZE));
         w(dev, QUEUE_DESC_LOW, ring.desc);
@@ -359,13 +364,13 @@ mod tests {
         w(dev, QUEUE_READY, 1);
     }
 
-    fn driver_ok(dev: &mut Dev<'_>) {
+    fn driver_ok<S: OutputSink>(dev: &mut Dev<'_, S>) {
         let all = status::ACKNOWLEDGE | status::DRIVER | status::FEATURES_OK | status::DRIVER_OK;
         w(dev, STATUS, u64::from(all));
     }
 
     /// The Linux driver's order: features, both queues, then `DRIVER_OK`.
-    fn init(dev: &mut Dev<'_>) {
+    fn init<S: OutputSink>(dev: &mut Dev<'_, S>) {
         handshake(dev);
         configure(dev, 0, RX);
         configure(dev, 1, TX);
@@ -425,7 +430,7 @@ mod tests {
     /// The guest's first write to the port: one byte on the transmit queue
     /// (descriptor 7, avail slot 0), which opens the receive path. Its
     /// interrupt is acknowledged so that tests start from a clear line.
-    fn open_port(dev: &mut Dev<'_>, mem: &VecMemory) {
+    fn open_port<S: OutputSink>(dev: &mut Dev<'_, S>, mem: &VecMemory) {
         mem.write(buf(7), b"!").unwrap();
         desc(mem, TX, 7, buf(7), 1, 0, 0);
         post(mem, TX, 0, 7, 1);
@@ -435,7 +440,7 @@ mod tests {
     }
 
     /// [`init`], then the guest's first write.
-    fn init_open(dev: &mut Dev<'_>, mem: &VecMemory) {
+    fn init_open<S: OutputSink>(dev: &mut Dev<'_, S>, mem: &VecMemory) {
         init(dev);
         open_port(dev, mem);
     }
@@ -804,6 +809,44 @@ mod tests {
         dev.input(b"w");
         assert_eq!(used_idx(&mem, RX), 0, "a device needing reset does nothing");
         assert_eq!(dev.device().pending_input(), 2);
+    }
+
+    /// A sink that records each call, as a host stream would see them.
+    #[derive(Default)]
+    struct Calls(Vec<Vec<u8>>);
+
+    impl OutputSink for Calls {
+        fn output(&mut self, bytes: &[u8]) {
+            self.0.push(bytes.to_vec());
+        }
+    }
+
+    #[test]
+    fn a_custom_sink_gets_each_transmitted_buffer_in_order() {
+        let mem = VecMemory::new(0x10000);
+        let line = RecordingLine::default();
+        let console = VirtioConsole::with_sink(Calls::default(), 16);
+        let mut dev = VirtioMmio::new(console, &mem, &line);
+        init(&mut dev);
+        mem.write(buf(4), b"ab").unwrap();
+        mem.write(buf(5), b"cd").unwrap();
+        desc(&mem, TX, 0, buf(4), 2, VIRTQ_DESC_F_NEXT, 1);
+        desc(&mem, TX, 1, buf(5), 2, 0, 0);
+        post(&mem, TX, 0, 0, 1);
+        w(&mut dev, QUEUE_NOTIFY, 1);
+        mem.write(buf(6), b"e").unwrap();
+        desc(&mem, TX, 2, buf(6), 1, 0, 0);
+        post(&mem, TX, 1, 2, 2);
+        w(&mut dev, QUEUE_NOTIFY, 1);
+        assert_eq!(
+            dev.device().sink().0,
+            [b"ab".to_vec(), b"cd".to_vec(), b"e".to_vec()],
+            "one call per buffer, in order"
+        );
+        assert!(
+            dev.device().port_open(),
+            "a streamed write still opens the port"
+        );
     }
 
     #[test]

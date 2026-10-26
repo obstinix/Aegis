@@ -96,6 +96,17 @@ impl<T: InterruptLine + ?Sized> InterruptLine for &T {
     }
 }
 
+/// Where a device's output goes as the guest produces it: a capped
+/// in-memory buffer by default, or a host stream to a terminal.
+///
+/// Devices call this on a vCPU thread with the device bus locked, so an
+/// implementation must not block for long. It should queue what it can and
+/// drop and count the rest.
+pub trait OutputSink {
+    /// The guest produced `bytes`, in order.
+    fn output(&mut self, bytes: &[u8]);
+}
+
 /// Why a device could not be attached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BusError {

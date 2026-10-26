@@ -13,15 +13,19 @@
 //! | 6 | MSR: 0 | ignored | |
 //! | 7 | SCR | SCR | |
 //!
-//! Not modeled: receive, interrupts, FIFOs, baud timing. Output is capped
-//! at [`Serial16550::DEFAULT_CAPACITY`] bytes; excess bytes are counted and
-//! dropped, so a guest cannot exhaust host memory through the console
-//! (`research/security-analysis.md` §3.4). Bytes are stored raw: escape them
-//! before writing them to a terminal.
+//! Not modeled: receive, interrupts, FIFOs, baud timing.
+//!
+//! Transmitted bytes go to the UART's [`OutputSink`], one byte per THR
+//! write. The default sink, [`CappedBuffer`], keeps at most
+//! [`Serial16550::DEFAULT_CAPACITY`] bytes and counts the excess, so a guest
+//! cannot exhaust host memory through the console
+//! (`research/security-analysis.md` §3.4). A host that streams the console
+//! passes its own sink to [`Serial16550::with_sink`]. Bytes are raw: escape
+//! them before writing them to a terminal.
 
-use alloc::vec::Vec;
+use aegis_core::{AccessSize, OutputSink, PortDevice};
 
-use aegis_core::{AccessSize, PortDevice};
+use crate::output::CappedBuffer;
 
 /// LSR: transmit holding register empty (bit 5) and transmitter empty (bit 6).
 const LSR_TX_EMPTY: u32 = 0x60;
@@ -30,12 +34,10 @@ const IIR_NONE: u32 = 0x01;
 /// LCR bit 7: divisor latch access.
 const LCR_DLAB: u8 = 0x80;
 
-/// A transmit-only 16550 UART.
+/// A transmit-only 16550 UART whose output goes to `S`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Serial16550 {
-    output: Vec<u8>,
-    capacity: usize,
-    dropped: u64,
+pub struct Serial16550<S = CappedBuffer> {
+    sink: S,
     ier: u8,
     lcr: u8,
     mcr: u8,
@@ -57,11 +59,28 @@ impl Serial16550 {
 
     /// A UART that keeps at most `capacity` output bytes.
     #[must_use]
-    pub fn with_capacity(capacity: usize) -> Self {
+    pub const fn with_capacity(capacity: usize) -> Self {
+        Self::with_sink(CappedBuffer::new(capacity))
+    }
+
+    /// Bytes the guest has transmitted (up to the cap).
+    #[must_use]
+    pub fn output(&self) -> &[u8] {
+        self.sink.bytes()
+    }
+
+    /// Bytes dropped because the cap was reached.
+    #[must_use]
+    pub const fn dropped(&self) -> u64 {
+        self.sink.dropped()
+    }
+}
+
+impl<S> Serial16550<S> {
+    /// A UART whose transmitted bytes go to `sink`.
+    pub const fn with_sink(sink: S) -> Self {
         Self {
-            output: Vec::new(),
-            capacity,
-            dropped: 0,
+            sink,
             ier: 0,
             lcr: 0,
             mcr: 0,
@@ -70,16 +89,9 @@ impl Serial16550 {
         }
     }
 
-    /// Bytes the guest has transmitted (up to the cap).
-    #[must_use]
-    pub fn output(&self) -> &[u8] {
-        &self.output
-    }
-
-    /// Bytes dropped because the cap was reached.
-    #[must_use]
-    pub const fn dropped(&self) -> u64 {
-        self.dropped
+    /// The output sink.
+    pub const fn sink(&self) -> &S {
+        &self.sink
     }
 
     /// The divisor latch, as last programmed by the guest.
@@ -91,17 +103,9 @@ impl Serial16550 {
     const fn dlab(&self) -> bool {
         self.lcr & LCR_DLAB != 0
     }
-
-    fn transmit(&mut self, byte: u8) {
-        if self.output.len() < self.capacity {
-            self.output.push(byte);
-        } else {
-            self.dropped = self.dropped.saturating_add(1);
-        }
-    }
 }
 
-impl PortDevice for Serial16550 {
+impl<S: OutputSink> PortDevice for Serial16550<S> {
     fn read(&mut self, offset: u16, _size: AccessSize) -> u32 {
         let value = match (offset, self.dlab()) {
             (0, true) => self.divisor[0],
@@ -124,7 +128,7 @@ impl PortDevice for Serial16550 {
         match (offset, self.dlab()) {
             (0, true) => self.divisor[0] = byte,
             (1, true) => self.divisor[1] = byte,
-            (0, false) => self.transmit(byte),
+            (0, false) => self.sink.output(&[byte]),
             (1, false) => self.ier = byte,
             (3, _) => self.lcr = byte,
             (4, _) => self.mcr = byte,
@@ -185,6 +189,27 @@ mod tests {
         }
         assert_eq!(uart.output(), [0, 1, 2, 3]);
         assert_eq!(uart.dropped(), 6);
+    }
+
+    /// A sink that records each call.
+    #[derive(Default)]
+    struct Calls(alloc::vec::Vec<alloc::vec::Vec<u8>>);
+
+    impl OutputSink for Calls {
+        fn output(&mut self, bytes: &[u8]) {
+            self.0.push(bytes.to_vec());
+        }
+    }
+
+    #[test]
+    fn a_custom_sink_gets_each_byte_as_it_is_transmitted() {
+        let mut uart = Serial16550::with_sink(Calls::default());
+        uart.write(0, B, u32::from(b'h'));
+        uart.write(3, B, 0x80); // DLAB=1: the next write is the divisor, not output
+        uart.write(0, B, 1);
+        uart.write(3, B, 0x03);
+        uart.write(0, B, u32::from(b'i'));
+        assert_eq!(uart.sink().0, [b"h".to_vec(), b"i".to_vec()]);
     }
 
     #[test]
