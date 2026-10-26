@@ -1,0 +1,12 @@
+[package]
+name = "aegis-core"
+description = "Backend-neutral Aegis core: VM lifecycle, guest memory map, VM-exit model. no_std + alloc."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
