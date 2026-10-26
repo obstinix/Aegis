@@ -161,6 +161,13 @@ The final signatures are fixed in M0 code review, not here.
 - **Port bus.** `PortBus` borrows its `PortDevice`s. Unassigned ports read as all ones and drop writes; both are logged, and the guest continues.
 - **Not built yet.** No `VmConfig`, `Backend` or `pause` exists yet. They arrive with the KVM backend, so their shape can be checked against a real implementation.
 
+**As implemented (M4h, SMP and MMIO).**
+- **MMIO inside `run`, like port I/O.** `Vcpu::run` now takes `&mut dyn GuestIo` (`PortIo` + `MmioIo`). An access a device claims returns the resumable `VmExit::MmioDevice`; an unclaimed one returns `VmExit::Mmio`, which still stops the VM (it is no longer resumable).
+- **One bus for both.** `PortBus` became `DeviceBus`, with port and MMIO windows. An MMIO access must fall entirely inside one window.
+- **Stopping a vCPU from outside.** `run_vcpu_until(vcpu, io, limits, stop)` checks a `StopFlag` before each entry. A backend error while the flag is set (the kick's `EINTR`) is `StopReason::Requested`, not a failure. `vm_stop_event` combines the per-vCPU reasons: `Requested` is ignored, and the VM stops normally only if every other reason is normal.
+- **Threads.** `aegis-kvm::smp` runs one scoped thread per vCPU over a mutex-protected `DeviceBus`. The first vCPU that stops for its own reason sets the flag, and the coordinator re-sends `SIGRTMIN` (raw `tgkill`) to the others every 10 ms until they finish. These are the backend's second and third `unsafe` blocks (`gettid`, `tgkill`), each with a SAFETY comment.
+- **KVM detail:** an application processor's `KVM_RUN` returns `EAGAIN` after INIT and SIPI change its state. The backend runs it again. That's not an error.
+
 ## ADR-0008: Devices and interrupts
 
 **Decision.**
@@ -173,7 +180,18 @@ The final signatures are fixed in M0 code review, not here.
   - LAPIC emulation is a later milestone.
 - **Passthrough:** unsupported until IOMMU enforcement exists (`security-analysis.md` §3.5).
 
-## ADR-0009: Management interface: CLI only
+**As implemented (M4h).**
+- **Device:** virtio-console, not virtio-blk. The test kernel builds virtio-blk as a module; see the roadmap's M4h scope note.
+- **Transport:** virtio-mmio version 2 at GPA `0xD000_0000` (4 KiB window), virtio 1.x only. `VIRTIO_F_VERSION_1` must be accepted before `FEATURES_OK`.
+- **Discovery through ACPI**, since the test kernel has neither MP-table parsing nor virtio-mmio command-line devices. `aegis-kvm::acpi` builds the tables with `acpi_tables` 0.2.1 at `0xE_0000` (inside the legacy BIOS area the kernel also scans) and passes the RSDP in `boot_params.acpi_rsdp_addr` (boot protocol ≥ 2.14):
+  - RSDP → XSDT;
+  - FADT, hardware-reduced, pointing at the DSDT;
+  - MADT, with one enabled LAPIC per vCPU and the IOAPIC at GSI base 0;
+  - DSDT, with one `LNRO0005` device per virtio-mmio window: `_HID`, `_UID` and a `_CRS` with Memory32Fixed plus a level-triggered, active-high, exclusive interrupt. This is the same shape as QEMU's microvm.
+
+  The tables are built only for SMP (`vcpus > 1`) or virtio. Otherwise the guest sees the unchanged M3 machine, with no ACPI.
+- **Interrupt:** GSI 5, level-triggered through the in-kernel IOAPIC with `KVM_IRQ_LINE`. The line follows `InterruptStatus`: raised for used buffers (unless the driver set `VRING_AVAIL_F_NO_INTERRUPT`) and for `DEVICE_NEEDS_RESET`, and lowered by `InterruptACK`.
+- **Queue code is Aegis's own, not `virtio-queue`.** `aegis-devices` is `no_std` and backend-neutral (ADR-0003), and its devices reach guest memory only through `aegis-core`'s `GuestMemoryAccess` trait. `virtio-queue` is built on `vm-memory`'s `GuestMemory`, which would tie the device crate to the hosted backend. The split-queue subset used is small: no indirect descriptors and no `EVENT_IDX`.
 
 **Decision.**
 - **Binary `aegis` commands:**

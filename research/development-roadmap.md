@@ -25,7 +25,7 @@
 | **M1** | `aegis doctor` | Reports: CPU vendor/model; VMX/SVM; EPT/NPT and the VMX feature list (Linux: `/proc/cpuinfo` `vmx flags`); `/dev/kvm` presence **and whether it opens**; `KVM_GET_API_VERSION` and key `KVM_CHECK_EXTENSION` results; `kvm_intel` nested/ept/unrestricted_guest; CPU vulnerability status. `--json` emits a versioned schema. Unit tests use fixtures captured from this workstation's WSL2 (including the current "permission denied" case). On Windows it reports "hosted KVM unsupported; Hyper-V active" truthfully. | WSL2, Windows | M0 | **done (tested: Windows 1.97.0-msvc; WSL2 Ubuntu 24.04 1.97.0-linux-gnu, with and without `/dev/kvm` access)**. See M1 detail below. |
 | **M2** | KVM: first guest | Creates a VM with 2 MiB of guest RAM; loads `tests/guests/hello16.asm` (real mode: `out 0x3F8` of a known string, then `hlt`); runs one vCPU. Asserts the exact IO-exit sequence and the final `Hlt`. Lifecycle reaches `Destroyed`; all fds closed (checked via `/proc/self/fd`). A negative test: a guest writing to an unassigned port is logged and the VM continues per policy; an unknown exit stops the VM with diagnostics. | WSL2 KVM | M1 | **done (tested: WSL2 Ubuntu 24.04, live KVM; mock backend on Windows and Linux)**. See M2 detail below. |
 | **M3** | KVM: boot Linux | A bzImage + initramfs load from paths in `vm.toml` (`aegis run --config`), via the 64-bit boot protocol implemented in `aegis-kvm::boot` (originally planned with `linux-loader`; see ADR-0004 note). In-kernel irqchip + PIT2; 16550 UART. The guest prints a marker from init to the serial console within a timeout. The VMM installs a seccomp allowlist after setup; a test shows a forbidden syscall kills the process. Memory cap enforced. | WSL2 KVM | M2 | **done (tested: WSL2 Ubuntu 24.04, live KVM, WSL2 kernel 6.18.33.2 as the guest)**. See M3 detail below. |
-| M4h | KVM: multi-vCPU + virtio | 2+ vCPUs boot Linux; virtio-blk over MMIO with a read-only image; fuzz targets for the device register paths | WSL2 KVM | M3 | not started |
+| M4h | KVM: multi-vCPU + virtio | 2+ vCPUs boot Linux, discovered through ACPI (MADT). A virtio-console over virtio-mmio, declared in the ACPI DSDT, carries guest output through a split virtqueue with interrupt delivery. Malformed queues and registers are handled without host panics (unit-tested). *Scope adjusted 2026-10-26; see the M4h scope note below.* | WSL2 KVM | M3 | **done (tested: WSL2, live KVM, WSL2 kernel 6.18.33.2 as the guest, 1/2/4/8 vCPUs)**. See M4h detail below. |
 | M5h | PyxisOS Track A validation | M3 tests rerun on the ThinkPad X1 Carbon (i7-7600U). Results are recorded in `compatibility-matrix.md` as hardware-tested. | Physical hardware | M3; owner runs it on that machine | not started |
 
 ### M0 detail (2026-10-26)
@@ -90,6 +90,46 @@ Windows results were rerun from a clean build on the pinned `1.97.0-x86_64-pc-wi
 - One vCPU; no ACPI or MP tables; `pci=off`.
 - Serial output is printed after the run, not streamed.
 - The guest kernel is the WSL2 kernel binary (GPL-2.0, Microsoft build) used locally as test input. It is not distributed with Aegis.
+
+### M4h scope note (2026-10-26)
+
+The original M4h row asked for virtio-blk and fuzz targets. The test guest kernel's build config (WSL2 6.18.33.2, `/proc/config.gz`) changes what can be integrated and tested:
+
+| Kernel option | Value | Effect on M4h |
+|---|---|---|
+| `CONFIG_X86_MPPARSE` | not set | The kernel ignores Intel MP tables, so SMP CPUs must be described in **ACPI** (RSDP → XSDT → FADT/DSDT/MADT). |
+| `CONFIG_VIRTIO_MMIO` | y | The virtio-mmio transport is available. |
+| `CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES` | not set | virtio-mmio devices cannot be declared on the kernel command line, so they are declared in the **ACPI DSDT** as `LNRO0005` devices (the virtio-mmio driver's ACPI ID). |
+| `CONFIG_VIRTIO_BLK` | m (module) | virtio-blk cannot be tested under `nomodules` with this kernel. **Deferred.** |
+| `CONFIG_VIRTIO_CONSOLE` | y | **virtio-console is the M4h device**: built in, the smallest complete virtio device (two split virtqueues), and it gives userspace an interrupt-driven console. |
+| `CONFIG_VIRTIO_PCI` | y | Would need PCI config-space and BAR emulation; out of proportion for M4h. |
+
+Fuzz targets move to a later milestone. Installing `cargo-fuzz` needs a nightly toolchain, which this workspace does not pin. The device register and queue paths get adversarial unit tests instead.
+
+### M4h detail (2026-10-26)
+
+| Part | Status |
+|---|---|
+| Core: MMIO dispatch and stopping from outside (`aegis-core`) | **done**. `GuestIo` = `PortIo` + `MmioIo`; `DeviceBus` (was `PortBus`) with port and MMIO windows; `VmExit::MmioDevice` (resumable). `run_vcpu_until` with a `StopFlag` and `StopReason::Requested`; `vm_stop_event` combines per-vCPU reasons. Mock: scripted MMIO and interruptions, `VecMemory`, `RecordingLine`. 41 tests (was 34). |
+| Split virtqueue (`aegis-devices::virtio::queue`) | **done**, `no_std`. Ring layout and alignment checks; ring and descriptor indices validated; chain walk bounded by the queue size; 1 MiB chain cap; indirect descriptors rejected; checked address arithmetic; Acquire/Release fences around the ring indices; `VRING_AVAIL_F_NO_INTERRUPT` honored. 6 tests, including malformed rings. |
+| virtio-mmio transport (`aegis-devices::virtio::mmio`) | **done**. Version 2 registers. 32-bit accesses only. Status bits can only be added, and writing 0 resets. `FEATURES_OK` needs `VIRTIO_F_VERSION_1` and no unoffered bits; `DRIVER_OK` needs `FEATURES_OK`. Queue fields are frozen while ready, and re-enabling a ready queue is ignored (it would replay returned buffers). A malformed queue sets `DEVICE_NEEDS_RESET` with a config interrupt. `InterruptStatus`/`InterruptACK` drive a level-triggered line. 10 tests, which follow Linux's init sequence. |
+| virtio-console (`aegis-devices::virtio::console`) | **done for output**. Device ID 3, no features, port 0 only. The transmit queue's readable buffers go to a 64 KiB capped buffer (overflow counted); the receive queue is accepted but never filled. |
+| ACPI tables (`aegis-kvm::acpi`) | **done**: RSDP, XSDT, FADT (HW-reduced), DSDT, and MADT at `0xE_0000`, 16-byte aligned, using `acpi_tables` 0.2.1. The DSDT has one `LNRO0005` device per virtio-mmio window, each with a unique `_UID`. 7 unit tests parse the bytes back: checksums sum to zero, lengths, RSDP→XSDT→FADT→DSDT links, MADT entries, and the AML `_HID`/`_UID`/`_CRS` encodings. The RSDP goes in `boot_params.acpi_rsdp_addr` (protocol ≥ 2.14, unit-tested). |
+| SMP runner (`aegis-kvm::smp`) | **done**: one scoped thread per vCPU, each sandboxed; a shared `Mutex<DeviceBus>`; stop flag plus a raw-`tgkill` `SIGRTMIN` kick, re-sent every 10 ms. APs get CPUID with their own APIC ID (unit-tested) and wait for INIT/SIPI; `KVM_RUN`'s `EAGAIN` after a state change is retried. |
+| `aegis run` | **done**: `vcpus = 1..8` (default 1) and `virtio_console = true/false` (default false) in `vm.toml`. hvc0 output is printed after the UART output under `--- virtio-console (hvc0) ---`, escaped. The stderr summary names the decisive stop and gives one line per vCPU plus the virtio state. |
+| Live test (`boots_two_vcpus_with_a_virtio_console`) | **done**, passing on live KVM in about 2.5–3 s. A NASM `/init` (`tests/guests/init_m4h.asm`) mounts `/proc`, writes a marker to `/dev/hvc0`, and copies `/proc/interrupts` to it. Asserted: the kernel uses the MADT and brings up 2 CPUs; no ACPI warning or error; both hvc0 markers; the guest's own interrupt table has `CPU0 CPU1` columns and a nonzero `virtio0` count; vCPU 0 stops with `Shutdown`, the other with `Requested`; 0 `KVM_IRQ_LINE` failures; no `DEVICE_NEEDS_RESET`; exit 0. Also run by hand: 15/15 repeated boots; 4 and 8 vCPUs boot with all CPUs online. |
+| Guest-side evidence (from the boot log, not assumed) | The kernel lists every table at the address the builder placed it. "ACPI: Using ACPI (MADT) for SMP configuration information"; "IOAPIC[0]: … GSI 0-23"; "ACPI: 1 ACPI AML tables successfully acquired and loaded"; `virtio0` on `IO-APIC 5-fasteoi` (level-triggered). With `acpi_force_table_verification`, the kernel checked every checksum at boot and reported none. |
+| Mutation checks | All on scratch copies, none committed. Each fails the test or the run: a corrupted MADT checksum (caught only after adding the "no ACPI warning" assertion, since the kernel warns but still uses the table); no used-buffer interrupt (the interrupt count is 0); no kick (the VMM hangs with the sibling halted in `KVM_RUN`, still running at a 30 s limit); `pthread_kill` instead of a raw `tgkill` (killed by `SIGSYS`); no `EAGAIN` retry (`KVM_RUN` error on vCPU 1 after 0 exits). The last two were real bugs found by the first live runs. |
+| Checks | WSL2: 127/127 tests including live KVM and both Linux boots (121 plus 6 ignored without `--include-ignored`). Windows: 97/97. fmt, clippy (zero findings), docs, `no_std` none/uefi builds, and `cargo deny` pass on both. |
+
+**Known limits (stated, not hidden):**
+- virtio-console is output-only: there is no host input, and the receive queue stays empty. There is no `VIRTIO_CONSOLE_F_SIZE`, no multiport, and no `EVENT_IDX`.
+- Device emulation runs on the vCPU thread, under a single bus lock. That's fine for a console, not a design for fast devices.
+- Guest output is still printed after the run, not streamed.
+- At most 8 vCPUs (the MADT builder's limit). There's no CPU hotplug, NUMA or topology leaves beyond the APIC ID. The vCPUs are not pinned.
+- The summary shows the device status at stop, which is 0. The guest's last write to `Status` was a reset; since the queues only work after `DRIVER_OK`, that reset came after all output, on the way to reboot.
+- The ACPI tables are checked by unit tests and by one guest kernel (Linux 6.18 via ACPICA). No other OS or firmware has consumed them, and no ACPI compiler (`iasl`) was run on them.
+- No fuzzing (see the scope note).
 
 ## Track B: bare metal (VMX, UEFI)
 

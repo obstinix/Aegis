@@ -29,7 +29,7 @@
 | Firmware / boot | Hosted: n/a. Bare metal: UEFI only (OVMF in QEMU). **Legacy BIOS: unsupported.** | planned / unsupported |
 | IOMMU (VT-d / AMD-Vi) | **No device passthrough in the first release.** Without IOMMU enforcement, passthrough is unsafe. | unsupported (until a dedicated milestone) |
 | Interrupt controller | Hosted: KVM in-kernel irqchip (`KVM_CREATE_IRQCHIP`). Bare metal: no APICv dependency (it isn't available nested here). Software LAPIC/x2APIC exits later. | planned |
-| SMP | Hosted: multi-vCPU later. Bare metal: BSP only at first. | planned |
+| SMP | Hosted: 1–8 vCPUs, described to the guest in ACPI (MADT); one host thread per vCPU (M4h). Bare metal: BSP only at first. | hosted: **tested** (WSL2 KVM, Linux 6.18 guest, 1/2/4/8 vCPUs). Bare metal: planned |
 | Memory requirements | Guest RAM cap enforced per VM (default small, e.g. 256 MiB; configurable) | planned |
 | Guests | First: tiny purpose-built test guests (real-mode/long-mode stubs). Then: Linux bzImage + initramfs, serial console. | planned |
 | Guest: PyxisOS Track B kernel (Multiboot 1) | Possible with a Multiboot loader or PVH entry. PyxisOS boots via QEMU `-kernel` today. | planned (separate validation) |

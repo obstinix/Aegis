@@ -158,3 +158,54 @@ Honest record of how work was done, including AI assistance. Commit metadata sta
   - Two scripted edits that failed on quoting were redone with exact-match edits.
   - Apparent escaped bytes in the boot log were a `grep` quoting artifact; a Python scan found none.
 - **Not done:** UART interrupts, streamed console output, SMP, virtio (M4h). No push yet.
+
+## 2026-10-26: Phase 4, M4h (SMP and virtio-console under KVM)
+
+- **Assistance:** Claude Code (model `claude-opus-5-5`), same session, which ran out of context once and continued from a summary.
+  - Device code was written from the virtio 1.2 specification (§2.7 split virtqueues, §4.2.2 virtio-mmio), and the ACPI layout from the ACPI 6.x table definitions.
+  - No third-party code was copied. The `acpi_tables` 0.2.1 source was read to confirm its builder APIs and integer AML encodings.
+  - The DSDT device shape was compared with QEMU microvm's description of its virtio-mmio devices.
+- **Scope change (directed by the owner's follow-up, recorded in the roadmap's M4h scope note):**
+  - virtio-console instead of virtio-blk, and ACPI instead of MP tables. Both follow from the guest kernel's config: `VIRTIO_BLK=m`, no `X86_MPPARSE`, and no virtio-mmio command-line devices.
+  - Fuzzing is deferred, because `cargo-fuzz` needs nightly.
+- **Dependencies added:**
+  - `acpi_tables` 0.2.1 (Apache-2.0, no `unsafe`), with `zerocopy`/`zerocopy-derive` 0.8.63 and build-only `syn` 2.
+  - `vmm-sys-util` 0.15.0, now a direct dependency (it was already transitive).
+  - `cargo deny` passes. The new `syn` duplicate is a warning, documented in the licensing review.
+- **Bugs found by the live runs, all fixed:**
+  - **The first two-vCPU boot died by `SIGSYS`.**
+    - The audit record (`type=1326 … syscall=39`) named `getpid`, which glibc's `pthread_kill` calls internally.
+    - Fix: the kick is now a raw `tgkill` with the PID and thread IDs read before any filter is installed, so it is exactly the syscall the filter allows. Allowing `getpid` was rejected.
+  - **vCPU 1 then failed with `KVM_RUN: EAGAIN` after 0 exits.**
+    - KVM returns `EAGAIN` when INIT/SIPI changes a waiting AP's state.
+    - The backend now runs `KVM_RUN` again on `EAGAIN`. That cannot spin, and a pending kick still yields `EINTR`.
+  - **The M3 boot test failed after the summary format changed.**
+    - Its assertion `guest stopped: Shutdown` broke.
+    - The headline now names the decisive stop reason again, so the M3 test is unchanged.
+  - **Review of my own docs found `_UID 0` on every DSDT device**, which breaks ACPI's uniqueness rule once there is more than one virtio window.
+    - Each device now uses its index as `_UID`, with a three-device unit test.
+    - My earlier note that `acpi_tables` has no integer AML encoding was wrong: `u8` implements `Aml`.
+- **What the guest showed:**
+  - Linux found every table where it was placed, used the MADT for SMP, and brought up 2, 4 and 8 CPUs.
+  - It loaded the DSDT and bound `virtio0` on IOAPIC pin 5, level-triggered.
+  - It wrote 1166 bytes through hvc0, and counted the used-buffer interrupts in its own `/proc/interrupts`.
+- **Checksum evidence was tested, not assumed.**
+  - The default boot does not verify checksums early, so I booted once with `acpi_force_table_verification`: no complaint.
+  - A scratch mutant with a corrupted MADT checksum showed that the kernel warns ("ACPI BIOS Warning (bug): Incorrect checksum") but still uses the table, and the live test still passed.
+  - The live test now asserts that no ACPI warning or error appears. With that, the mutant fails.
+- **Other mutation checks**, all on scratch copies that are not committed:
+  - with no used-buffer interrupt, the interrupt-count assertion fails;
+  - with no kick, the VMM hangs (still running at a 30 s limit).
+- **Found while reviewing the staged diff before committing:**
+  - Writing `QueueReady = 1` to a queue that was already ready rewound its ring indices, so the device would replay buffers it had already returned. That only affects the guest's own data, and Linux never does it, but re-enabling a ready queue is now ignored. The test extension fails on a mutant without the guard.
+  - Two doc comments were stale: `_UID = 0`, and "devices implement `PortDevice`".
+- **Found by testing the code commit on its own:** I exported the code commit alone with `git archive` and ran the full suite on it.
+  - The old config-error test used `vcpus = 4` as its unknown key. That key is now valid, so the test failed at that commit.
+  - The one-line test fix (`balloon = true`) was folded into the unpushed code commit, which then passed 125/125 on its own.
+  - While preparing that amend, a scripted step copied HEAD's test file over the working copy, because a heredoc line break ended the `&&` chain. It was restored from a backup made just before. Nothing was staged or committed in between.
+- **Also fixed:**
+  - clippy `too_many_lines` in `run_vm`, which is now split into helpers;
+  - literal newlines that a scripted edit had put into summary strings;
+  - an unused import.
+- **Checks:** all pass on Windows and WSL2 (counts in the roadmap's M4h detail).
+- **Not done:** virtio-console input; streaming output; virtio-blk (the kernel builds it as a module); fuzzing; B0. No push yet.

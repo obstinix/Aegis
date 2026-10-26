@@ -29,10 +29,10 @@ written to understand, and then own, the boundary between hardware and execution
 | ---------------------------- | --------------- |
 | Architecture & design docs   | 🟡 In progress  |
 | Build system / toolchain     | 🟢 Done (M0): Rust 1.97.0 pinned; fmt, clippy, tests, docs, `no_std`/UEFI builds and `cargo deny check` pass on Windows and WSL2. No CI yet. |
-| `aegis-core` (lifecycle, memory map, exit model, backend interface, port bus, dispatch loop) | 🟡 Implemented; 34 tests on Windows and Linux, driven by a scripted mock backend. No real backend uses it yet. |
-| `aegis-devices` (16550 UART, transmit-only) | 🟡 Implemented; 6 tests (mock backend), and driven by real KVM guests in the `aegis-kvm` tests. |
+| `aegis-core` (lifecycle, memory map, exit model, backend interface, port + MMIO device bus, dispatch loop with a stop flag) | 🟡 Implemented; 41 tests on Windows and Linux, driven by a scripted mock backend. Used by the KVM backend; the bare-metal backend does not exist yet. |
+| `aegis-devices` (16550 UART, transmit-only; virtio-mmio transport, split virtqueue, virtio-console transmit) | 🟡 Implemented, `no_std`; 22 tests (mock memory and interrupt line), and driven by real KVM guests and a Linux boot. virtio-console has no host-to-guest input yet. |
 | `aegis doctor` capability report | 🟢 Done (M1): tested live and with fixtures on Windows and WSL2, including KVM API version and extension queries. |
-| Hosted KVM backend (stage 1) | 🟡 M3 done: `aegis run --config vm.toml` boots a Linux bzImage + initramfs to `/init` under KVM, with in-kernel irqchip/PIT, a UART console and a seccomp allowlist (tested in WSL2). Single vCPU; no virtio yet (M4h). |
+| Hosted KVM backend (stage 1) | 🟡 M3 and M4h done: `aegis run --config vm.toml` boots a Linux bzImage + initramfs to `/init` under KVM, with in-kernel irqchip/PIT, a UART console and a seccomp allowlist. With `vcpus = 2..8` the vCPUs are described in ACPI (MADT) and each runs on its own sandboxed thread; `virtio_console = true` adds a virtio-console over virtio-mmio, declared in the ACPI DSDT. Tested live in WSL2 with 1, 2, 4 and 8 vCPUs. |
 | VMX / SVM capability checks  | ⚪ Not started  |
 | VMX operation (VMXON)        | ⚪ Not started  |
 | First guest (VMLAUNCH)       | ⚪ Not started  |

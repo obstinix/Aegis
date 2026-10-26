@@ -48,7 +48,7 @@ Everything below assumes **Apache-2.0 outbound**.
 |---|---|---|---|
 | `kvm-ioctls` | 0.25.1 | Apache-2.0 OR MIT | KVM ioctl wrappers |
 | `kvm-bindings` | 0.14.2 | Apache-2.0 | KVM structs |
-| `vmm-sys-util` | 0.15.0 | BSD-3-Clause | eventfd, ioctl helpers |
+| `vmm-sys-util` | 0.15.0 | BSD-3-Clause | ioctl helpers (transitive since M2); a direct `aegis-kvm` dependency since M4h, for `SIGRTMIN` and the kick signal handler |
 | `vm-memory` | 0.18.0 (in use since M2; 0.17.2 is a compatibility shim over 0.18) | Apache-2.0 OR BSD-3-Clause | Guest memory abstraction (`backend-mmap`) |
 | `thiserror`, `thiserror-impl` | 2.0.21 | MIT OR Apache-2.0 | Pulled in by `vm-memory` |
 | `winapi` (+ two `-gnu` helper crates) | 0.3.9 / 0.4.0 | MIT OR Apache-2.0 | Locked as `vm-memory`'s Windows-only dependency; never compiled, since `aegis-kvm` builds `vm-memory` only on Linux |
@@ -57,11 +57,13 @@ Everything below assumes **Apache-2.0 outbound**.
 | `toml` (+ `toml_parser`, `toml_datetime`, `toml_writer`, `serde_spanned`) | 1.1.x | MIT OR Apache-2.0 | `vm.toml` parsing (M3) |
 | `winnow` | 1.0.4 | MIT | TOML parser internals |
 | `indexmap`, `hashbrown`, `equivalent` | 2.14.2 / 0.17.1 / 1.0.3 | MIT OR Apache-2.0 (indexmap: Apache-2.0 OR MIT) | Pulled in by `toml` |
-| `virtio-queue` | 0.18.0 | Apache-2.0 AND BSD-3-Clause | virtio (later milestones) |
+| `virtio-queue` | 0.18.0 | Apache-2.0 AND BSD-3-Clause | **Not used** (M4h decision, ADR-0008 note): `aegis-devices` has its own `no_std` split virtqueue |
 | `vm-device` | 0.1.0 | Apache-2.0 OR BSD-3-Clause | Device bus |
 | `seccompiler` | 0.5.0 | Apache-2.0 OR BSD-3-Clause | Seccomp filters for the VMM |
 | `event-manager` | 0.4.2 | Apache-2.0 OR BSD-3-Clause | epoll loop |
-| `acpi_tables` | 0.2.1 | Apache-2.0 | ACPI table generation |
+| `acpi_tables` | 0.2.1 | Apache-2.0 | ACPI table and AML generation (in use since M4h, Linux only; contains no `unsafe`) |
+| `zerocopy`, `zerocopy-derive` | 0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT | Pulled in by `acpi_tables` (M4h) |
+| `syn` 2 | 2.0.119 | MIT OR Apache-2.0 | Build-time only, for `zerocopy-derive`. It duplicates `syn` 3.0.9 (used by `serde_derive` and `thiserror-impl`); `cargo deny` reports this as a warning, since `multiple-versions = "warn"`. Not in any binary. |
 | `mshv-ioctls` | 0.7.1 | Apache-2.0 OR BSD-3-Clause | MSHV backend (optional, later) |
 | `windows-sys` | 0.61.2 | MIT OR Apache-2.0 | WHP backend (later) |
 | `uefi` | 0.41.0 | MIT OR Apache-2.0 | UEFI app for the bare-metal core |
