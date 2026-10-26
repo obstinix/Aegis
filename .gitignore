@@ -1,0 +1,9 @@
+# Build output
+/target/
+*.efi
+*.img
+*.iso
+
+# Local-only research material: downloaded archives, third-party clones,
+# generated scratch reports, throwaway experiments. Never commit these.
+/research/local/
