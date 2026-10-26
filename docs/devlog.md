@@ -273,3 +273,38 @@ Honest record of how work was done, including AI assistance. Commit metadata sta
   - WSL2: 163/163 with 8 live tests (155 run in a plain `cargo test`), plus `uefi-test`.
   - fmt, clippy (including `aegis-uefi` for the UEFI target), docs, the `no_std` builds and `cargo deny` pass on both.
 - **Not done:** VMX (B1); CI; PDB symbols for debugging; the `ucs2` licence decision. No push yet; it awaits owner approval.
+
+## 2026-10-27: CI, streamed console output, M5h script, fuzzing preparation
+
+- **Assistance:** Claude Code (model `claude-opus-5-5`, desktop app), same session. The work followed the owner's directive of 2026-10-27, which set the priorities: CI, streaming `aegis run` output, ThinkPad validation, fuzzing preparation, and the `ucs2` licence question. The details are in the roadmap's "Cross-cutting work" section.
+- **Commits** (local, authored by `obstinix`, not yet pushed):
+  - `21075a5` `repro-test`;
+  - `1fdfe8f` CI;
+  - `b2022c1` output sinks;
+  - `fe34bf4` streaming;
+  - `09d1f5e` the M5h script;
+  - `abd1259` the licensing review;
+  - `97ad0b8` the fuzz crate;
+  - then these docs.
+- **Installs: none.**
+  - Already present and used: Windows' nightly toolchain (`nightly-x86_64-pc-windows-msvc`, rustc 1.100.0-nightly 2026-09-23), the MSVC Build Tools, including their AddressSanitizer runtime, and cargo-deny 0.20.2.
+  - Downloaded, as ordinary cargo dependency fetches, into the cargo cache: the `libfuzzer-sys` dependency tree, and `uefi` 0.41 with `ucs2` 0.3.3 in a scratch project outside the repository, only to read their source.
+  - cargo-fuzz was not installed, and WSL2 was not given nightly Rust or a C++ compiler; both need owner approval.
+- **CI.** The workflow's own steps were run locally from the parsed YAML, on Windows and in WSL2, and all passed. It has not run on GitHub; that happens on push. README Phase 0 stays unticked until it has.
+- **Streaming.**
+  - The live test proves streaming without timing assumptions. It waits for the guest's prompt on stdout while `aegis` is still running, and only then sends the input that answers it.
+  - One pre-existing gap was fixed on the way: a panic during a run could leave the stdin worker running and hang the scope.
+  - The console is still not interactive (no raw mode, no Ctrl-C passthrough), and the docs say so.
+- **Hardware validation.** The script was checked under WSL2 only. It has not been run on the ThinkPad, and no ThinkPad result is recorded anywhere.
+- **Fuzzing findings:**
+  - libFuzzer's coverage flags work on stable Rust, but on Windows linking needs the AddressSanitizer runtime, hence nightly.
+  - On Windows a Rust abort is a fast-fail that libFuzzer cannot catch, so crash inputs were silently not saved. The targets now save the input from a panic hook. A planted bug proved it: the fuzzer found it, the saved input reproduced it on stable, and it replayed cleanly once the bug was reverted.
+  - Two first-draft invariants were wrong about the device and were corrected before any fuzzing: "status has only defined bits" (the transport stores what the driver writes) and an unconditional kernel-path check (Windows `Path::join` semantics).
+- **`ucs2`.** Its source was inspected (licensing review §3.1): MPL-2.0, no per-file headers, a mandatory dependency of `uefi` 0.41. The options are written up for the owner; `deny.toml` is unchanged.
+- **Checks:**
+  - Windows: 134/134.
+  - WSL2: 176/176 including the live tests.
+  - The fuzz crate passes 15 tests on both.
+  - `uefi-test` and `repro-test` passed, and fmt, clippy (0 findings), docs, the `no_std`/UEFI builds and `cargo deny` pass on both.
+  - One local Windows run of the fuzz CI step failed with `LNK1104`, a linker file lock. The same environmental issue was seen earlier in this project. The full job passed on rerun after a clean build of the fuzz crate.
+- **Not done:** a GitHub CI run (no push yet); the ThinkPad run (M5h, owner); cargo-fuzz and Linux fuzzing (need approval); fuzzing exit dispatch; the `ucs2` decision (owner). No push yet; it awaits owner approval.

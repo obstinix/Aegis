@@ -20,7 +20,7 @@ written to understand, and then own, the boundary between hardware and execution
 ---
 
 > [!WARNING]
-> **Aegis has no working code yet.** This README documents the design and the plan.
+> **Aegis is early, experimental code.** The hosted KVM backend boots Linux in tests under WSL2. It has not been tested on physical hardware or security-reviewed beyond this repository's own analysis, and the bare-metal core does no virtualization yet.
 > Anything marked *planned* is a goal, not a capability. Do not rely on Aegis to isolate anything.
 
 ## Status
@@ -28,11 +28,11 @@ written to understand, and then own, the boundary between hardware and execution
 | Area                         | State           |
 | ---------------------------- | --------------- |
 | Architecture & design docs   | 🟡 In progress  |
-| Build system / toolchain     | 🟢 Done (M0): Rust 1.97.0 pinned; fmt, clippy, tests, docs, `no_std`/UEFI builds and `cargo deny check` pass on Windows and WSL2. No CI yet. |
+| Build system / toolchain     | 🟢 Done (M0): Rust 1.97.0 pinned; fmt, clippy, tests, docs, `no_std`/UEFI builds and `cargo deny check` pass on Windows and WSL2. CI (`.github/workflows/ci.yml`) runs them on Linux and Windows, together with the reproducible-build check (`cargo xtask repro-test`) and the fuzz harnesses' smoke tests; its first run on GitHub is still pending. Live KVM and nested tests stay local (ADR-0010). |
 | `aegis-core` (lifecycle, memory map, exit model, backend interface, port + MMIO device bus, dispatch loop with a stop flag) | 🟡 Implemented; 41 tests on Windows and Linux, driven by a scripted mock backend. Used by the KVM backend; the bare-metal backend does not exist yet. |
-| `aegis-devices` (16550 UART, transmit-only; virtio-mmio transport, split virtqueue, virtio-console output and input) | 🟡 Implemented, `no_std`; 35 tests (mock memory and interrupt line), and driven by real KVM guests and Linux boots. Console input reaches the guest once it has written to `/dev/hvc0` (see the roadmap's M6h limits). |
+| `aegis-devices` (16550 UART, transmit-only; virtio-mmio transport, split virtqueue, virtio-console output and input) | 🟡 Implemented, `no_std`; 38 tests (mock memory and interrupt line), and driven by real KVM guests and Linux boots. Console output goes to a pluggable sink: a capped buffer by default, `aegis run`'s stream in practice. Console input reaches the guest once it has written to `/dev/hvc0` (see the roadmap's M6h limits). The virtqueue and virtio-mmio paths have fuzz harnesses ([`docs/fuzzing.md`](docs/fuzzing.md)). |
 | `aegis doctor` capability report | 🟢 Done (M1): tested live and with fixtures on Windows and WSL2, including KVM API version and extension queries. |
-| Hosted KVM backend (stage 1) | 🟡 M3, M4h and M6h done: `aegis run --config vm.toml` boots a Linux bzImage + initramfs to `/init` under KVM, with in-kernel irqchip/PIT, a UART console and a seccomp allowlist. With `vcpus = 2..8` the vCPUs are described in ACPI (MADT) and each runs on its own sandboxed thread; `virtio_console = true` adds a virtio-console over virtio-mmio, declared in the ACPI DSDT. `virtio_console_stdin = true` forwards `aegis run`'s stdin to the guest's `/dev/hvc0` (M6h). Tested live in WSL2 with 1, 2, 4 and 8 vCPUs. Not yet tested on physical hardware (M5h). |
+| Hosted KVM backend (stage 1) | 🟡 M3, M4h and M6h done: `aegis run --config vm.toml` boots a Linux bzImage + initramfs to `/init` under KVM, with in-kernel irqchip/PIT, a UART console and a seccomp allowlist. With `vcpus = 2..8` the vCPUs are described in ACPI (MADT) and each runs on its own sandboxed thread; `virtio_console = true` adds a virtio-console over virtio-mmio, declared in the ACPI DSDT. `virtio_console_stdin = true` forwards `aegis run`'s stdin to the guest's `/dev/hvc0` (M6h). Guest console output is streamed to stdout while the guest runs: UART output as it is, hvc0 lines prefixed `hvc0| `. It is not an interactive console yet: there is no terminal raw mode and no Ctrl-C passthrough. Tested live in WSL2 with 1, 2, 4 and 8 vCPUs. Not yet tested on physical hardware: the M5h script and checklist are ready ([`docs/hardware-validation.md`](docs/hardware-validation.md)) but have not been run on the ThinkPad. |
 | Bare-metal UEFI core (`aegis-uefi`) and nested test harness | 🟡 B0 done: `cargo xtask uefi-test` boots the UEFI application under QEMU/KVM with OVMF, nested in WSL2. It passes when the app's serial marker appears and the VM powers itself off. The app does no virtualization yet. |
 | VMX / SVM capability checks  | ⚪ Not started  |
 | VMX operation (VMXON)        | ⚪ Not started  |
@@ -145,7 +145,12 @@ The detailed milestone plan, including the hosted KVM track that comes first, is
 - [ ] **Phase 0 · Foundations**
   Repo layout, toolchain, CI, serial logging.
   *Done when:* a bootable image builds reproducibly and prints to serial under QEMU.
-  *Status:* the image boots and prints under QEMU, tested by `cargo xtask uefi-test` (roadmap B0). It also builds reproducibly on one host, but that was checked by hand, not by a test in the repo, and there is no CI yet. So the box stays unticked.
+  *Status:*
+  - The image boots and prints under QEMU, tested by `cargo xtask uefi-test` (roadmap B0, run locally).
+  - It builds reproducibly, tested by `cargo xtask repro-test`: two clean builds must be byte-identical. That holds per host; Windows and Linux builds differ from each other.
+  - CI (`.github/workflows/ci.yml`) runs the checks and `repro-test` on Linux and Windows, but it has not yet run on GitHub.
+
+  The box stays unticked until the first CI run on GitHub passes.
 
 - [ ] **Phase 1 · Capability detection**
   Intel: `CPUID.1:ECX[5]` (VMX), `IA32_FEATURE_CONTROL` (MSR `0x3A`) lock/enable bits, `IA32_VMX_BASIC` (MSR `0x480`).

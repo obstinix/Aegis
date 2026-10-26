@@ -57,7 +57,7 @@ Hosted (stage 1)                          Bare metal (stage 2)
     - `ioctl` `KVM_IRQ_LINE`, for the virtio-console's interrupt. Like `KVM_RUN`, this only acts on the VM's own fd.
     - `tgkill`, only with `tgid` = this process and signal `SIGRTMIN`: the coordinator's kick that makes a sibling vCPU's `KVM_RUN` return `EINTR` when the guest stops. The kick is a raw `tgkill` and not `pthread_kill`, because glibc's `pthread_kill` also calls `getpid`; the first two-vCPU boot was killed on that `getpid` (`syscall=39` in the audit log), and allowing a syscall only because a C library happens to issue it was rejected. No `clone` is allowed, so a thread ID cannot be reused by a new thread while the filter is on.
     - `clock_nanosleep` and `nanosleep`, for the coordinator's 10 ms kick interval.
-  - *Device input (M4h):* the virtio-mmio registers and the split virtqueue are guest-controlled. Every ring index, descriptor address, length and chain is validated with checked arithmetic against the guest memory map. Chains are bounded by the queue size and by 1 MiB, indirect descriptors are rejected, and output is capped at 64 KiB. A malformed queue sets `DEVICE_NEEDS_RESET` and stops processing; it never panics the host. All of this is unit-tested with malformed inputs, not fuzzed (see §5).
+  - *Device input (M4h):* the virtio-mmio registers and the split virtqueue are guest-controlled. Every ring index, descriptor address, length and chain is validated with checked arithmetic against the guest memory map. Chains are bounded by the queue size and by 1 MiB, indirect descriptors are rejected, and output is capped at 64 KiB. A malformed queue sets `DEVICE_NEEDS_RESET` and stops processing; it never panics the host. All of this is unit-tested with malformed inputs. Since 2026-10-27 it is also fuzzed (§5, docs/fuzzing.md).
   - *Device input (M6h):* the receive path writes host bytes into guest-chosen buffers.
     - A receive chain must be entirely device-writable, or it is rejected before anything is written.
     - Each call makes at most one pass over the ring, so a driver posting buffers from another vCPU cannot hold the device.
@@ -66,6 +66,10 @@ Hosted (stage 1)                          Bare metal (stage 2)
   - *Input worker (M6h):* stdin is read by its own thread under `input_worker_filter`, which is the run-loop allowlist plus `read` on fd 0 and `poll`/`ppoll`.
     - The worker never blocks without bound. It polls with a 20 ms timeout, and the SMP runner's `SIGRTMIN` kick interrupts a `read` that another process's draining of the shared stdin could leave blocked.
     - It stops delivering when the guest stops, and it is joined before the VM is torn down.
+  - *Output streaming (2026-10-27):* `aegis run` writes guest console output to stdout while the guest runs. This replaces the 64 KiB buffers above for `aegis run`; the devices keep that cap as their default sink.
+    - The devices hand output to one bounded queue (1 MiB). A vCPU never waits for the terminal: output that does not fit is dropped and counted in the summary.
+    - A single writer thread drains the queue under the run-loop seccomp filter. If stdout fails, for example a closed pipe, it keeps draining, so the vCPUs are unaffected, and it counts the bytes not shown.
+    - Guest bytes are still escaped before they reach the terminal, so a guest cannot send terminal control sequences.
 - No network, no filesystem writes outside an explicitly named run directory. Later: optional namespace/jailer, as in Firecracker.
 - Minimal default device set: **one serial port**. Everything else is opt-in.
 
@@ -100,9 +104,16 @@ Hosted (stage 1)                          Bare metal (stage 2)
 
 ## 4. Supply chain and build integrity
 - `Cargo.lock` committed; Rust toolchain pinned with `rust-toolchain.toml`.
-- `cargo deny check` (licenses + advisories + bans) and `cargo audit` in CI. Both need owner approval to install locally.
+- `cargo deny check` (licences, RustSec advisories, bans, sources) runs locally and in CI (`.github/workflows/ci.yml`, cargo-deny 0.20.2, since 2026-10-27). `cargo audit` is not added: cargo-deny's advisories check reads the same RustSec advisory database.
+- CI itself:
+  - It uses only GitHub's own actions (`checkout`, `cache`), pinned to full commit SHAs.
+  - The workflow token is read-only (`permissions: contents: read`), and checkout does not persist credentials.
+  - The toolchain comes from `rust-toolchain.toml`, and cargo-deny is built with `--locked` at a pinned version.
 - Minimal dependencies; each new crate is justified in its commit message.
-- Reproducible builds as a later goal: record toolchain version and build flags; compare artifact hashes across two clean builds.
+- Reproducible builds:
+  - **Checked, on one host at a time.** `cargo xtask repro-test` builds `aegis-uefi.efi` twice from clean target directories, debug and release, and requires byte-identical EFI files and FAT images. CI runs it on Linux and Windows.
+  - Builds on different hosts (Windows and Linux) still differ from each other.
+  - The toolchain version and build flags are pinned in `rust-toolchain.toml` and `.cargo/config.toml`.
 - Release artifacts: checksums at minimum; signing once release infrastructure exists.
 
 ## 5. Security testing plan
@@ -111,7 +122,7 @@ Hosted (stage 1)                          Bare metal (stage 2)
 |---|---|---|
 | Unit tests with adversarial inputs | GPA validation, decoders, config parser | From M0 |
 | Property tests (`proptest`) | Memory map overlap and bounds; EPT builder never maps hypervisor ranges | M2 / M5 |
-| Fuzzing (`cargo fuzz`) | Exit-dispatch with arbitrary exit info and register state against a mock backend; device register handlers; config parser | From M2 |
+| Fuzzing (`cargo fuzz`) | Exit-dispatch with arbitrary exit info and register state against a mock backend; device register handlers; config parser | Since 2026-10-27: virtqueue, virtio-mmio registers with the console, and the `vm.toml` parser (`fuzz/`, docs/fuzzing.md). Their stable smoke tests run in CI. Coverage-guided runs so far: one 3-minute run per target on Windows, with no crashes. Exit dispatch is not covered yet. |
 | Seccomp regression | Forbidden syscall → kill | M3 |
 | Nested integration tests | Malicious test guests: wild MMIO, I/O to unassigned ports, writes to unmapped GPAs, huge exit storms | M3 / M5 |
 | Code review | `security-review` skill (available in the current session); later `cloudflare/security-audit-skill` (needs approval) | Each milestone |
