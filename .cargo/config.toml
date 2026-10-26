@@ -1,0 +1,8 @@
+# Reproducible UEFI images. lld-link otherwise stamps the build time into the
+# PE header and a per-build PDB reference and ID into a debug directory, so
+# two builds of the same source differ. /Brepro removes the timestamp and
+# /DEBUG:NONE the debug directory (and the PDB with it; revisit when
+# debugging with GDB needs symbols). Checked 2026-10-26: builds in two target
+# directories are byte-identical.
+[target.x86_64-unknown-uefi]
+rustflags = ["-C", "link-arg=/DEBUG:NONE", "-C", "link-arg=/Brepro"]

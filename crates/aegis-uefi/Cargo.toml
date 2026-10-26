@@ -1,0 +1,15 @@
+[package]
+name = "aegis-uefi"
+description = "Aegis bare-metal core: a UEFI application (ADR-0005). Builds to an explanatory stub on other targets."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[target.'cfg(target_os = "uefi")'.dependencies]
+uefi-raw.workspace = true
+
+[lints]
+workspace = true
