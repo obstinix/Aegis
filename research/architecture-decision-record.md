@@ -75,8 +75,11 @@ rust-toolchain.toml
 crates/
   aegis-core/      #![no_std] + alloc. VmConfig model, lifecycle state machine, VmExit enum,
                    device-bus traits, GuestMemory region map + validation. No OS, no unsafe.
-  aegis-probe/     Capability detection. CPUID decoding is no_std; Linux /dev/kvm,
-                   kvm_intel params and vulnerability reporting sit behind feature "linux".
+  aegis-probe/     Capability detection. CPUID decoding is no_std (default-features = false).
+                   Feature "std" (default) adds the Linux /proc and /sys parsers (they build on
+                   every OS, so fixtures test them anywhere), the doctor report, and serde.
+                   The live /dev/kvm probe and kvm-ioctls are compiled only on Linux.
+                   (Revised in M1 from a separate "linux" feature; see the devlog.)
   aegis-kvm/       Hosted backend (Linux only): rust-vmm kvm-ioctls, vm-memory, linux-loader.
   aegis-uefi/      Bare-metal VMX core, target x86_64-unknown-uefi (crate `uefi`).
   aegis-devices/   Backend-neutral device models (16550 UART first).

@@ -68,3 +68,24 @@ Honest record of how work was done, including AI assistance. Commit metadata sta
   - **Cleanup:** the temporary download directory was removed. The build caches `~/cargo-deny-build` (329 MB) and `~/aegis-target` were left in place.
   - **Note:** WSL rustup has no default toolchain by design. Outside the repo, use `cargo +1.97.0`.
   - **Next:** M1 (`aegis doctor`). M2 and later stay blocked on `kvm` group membership.
+
+## 2026-10-26: Phase 4, M1 (`aegis doctor`)
+
+- **Assistance:** Claude Code (model `claude-opus-5-5`), same session. Code was written by the assistant from the ADRs and the Intel SDM / AMD APM bit definitions, with no third-party code consulted or copied.
+- **Added:**
+  - `crates/aegis-probe`:
+    - CPUID decoding, `no_std`, with no `unsafe` (`__cpuid` is a safe function on 1.97.0, verified by compiling under `forbid(unsafe_code)`);
+    - Linux `/proc` and `/sys` parsers with a configurable root;
+    - a live `/dev/kvm` probe;
+    - a pure `Report::evaluate`.
+  - `crates/aegis-cli`: the `aegis` binary (`doctor`, `doctor --json`, `doctor --raw`, `version`, `help`; exit 2 on usage errors).
+  - Fixtures captured from this workstation (WSL2 and Windows), with `.gitattributes` keeping them byte-exact.
+- **Tests:** 25 new (15 probe unit, 8 fixture, 2 CLI), 47 in total. Fixture assertions compare against independently observed facts (`/proc/cpuinfo` text, module parameter files, Phase 1 WMI values), not against the probe's own earlier output. A mutation check in a scratch copy (fixture `nested=N`) failed exactly the 3 dependent tests.
+- **Issues found and fixed before commit:**
+  - clippy `doc_markdown` on hex leaf numbers in docs;
+  - one redundant closure;
+  - a doc comment that overclaimed which `/dev/kvm` paths had run live;
+  - a code comment that cited an unverified Rust version;
+  - awkward verdict wording.
+- **Design change:** ADR-0003 said `aegis-probe` would use a `linux` feature. It now uses a default `std` feature with the Linux-only parts gated by `target_os`, so the parsers are tested on Windows as well. The ADR text is updated.
+- **Not done:** live `KVM_GET_API_VERSION` / `KVM_CHECK_EXTENSION`. Implemented, but they need `/dev/kvm` access (owner: `kvm` group).
