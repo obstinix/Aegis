@@ -151,7 +151,7 @@ Stars measure attention, not suitability. Firecracker (37.6k stars), Cloud Hyper
 | Windows toolchain | rustc/cargo/rustup, nasm, `qemu-system-x86_64`, gdb, go, clang all on PATH (versions not yet recorded). |
 
 **Consequences (to be confirmed in Phase 2):**
-1. A **hosted KVM** backend can be built and tested today inside WSL2. *Phase 2 update:* the WSL user is **not** in the `kvm` group, and opening `/dev/kvm` fails with permission denied. See `compatibility-matrix.md` §1.
+1. A **hosted KVM** backend can be built and tested today inside WSL2. *Phase 2 update:* the WSL user is **not** in the `kvm` group, and opening `/dev/kvm` fails with permission denied. See `compatibility-matrix.md` §1. *M1 update:* the owner added the user to `kvm`, and `/dev/kvm` now opens.
 2. A **bare-metal VT-x prototype** can be exercised as a guest of QEMU/KVM in WSL2 with nested VMX (`-cpu host`). This depends on nested virtualization working through Hyper-V → WSL2 → KVM → guest, which was **not yet tested**. QEMU's TCG (no-KVM) mode on Windows does not emulate VMX, so bare-metal VMX testing cannot use plain Windows QEMU.
 3. Physical-hardware validation (ThinkPad i7-7600U) is a separate, later step. Emulator success will not be reported as hardware support.
 

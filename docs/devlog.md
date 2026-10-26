@@ -89,3 +89,14 @@ Honest record of how work was done, including AI assistance. Commit metadata sta
   - awkward verdict wording.
 - **Design change:** ADR-0003 said `aegis-probe` would use a `linux` feature. It now uses a default `std` feature with the Linux-only parts gated by `target_os`, so the parsers are tested on Windows as well. The ADR text is updated.
 - **Not done:** live `KVM_GET_API_VERSION` / `KVM_CHECK_EXTENSION`. Implemented, but they need `/dev/kvm` access (owner: `kvm` group).
+- **Update: M1 done.**
+  - **The `kvm` group change took four attempts by the owner.**
+    - Attempts 1–3 left no trace in Ubuntu: `/etc/group` unchanged since 2026-10-09, the backup `/etc/group-` from 2026-08-26, nothing in `auth.log`. The Terminal panel showed only an empty prompt.
+    - From the assistant's side, `wsl -d Ubuntu -u root` was confirmed to reach the right distro, using read-only commands only.
+    - The fourth attempt worked: `kvm:x:993:obsti`, with `/etc/group` rewritten at 04:57:04 UTC.
+    - The assistant didn't run `usermod` itself; it's a security setting.
+  - **First live run of the `Opened` path:** API version 12; `irqchip`, `user_memory`, `pit2`, `ext_cpuid`, `immediate_exit` all present. Raw `fcntl.ioctl` calls from Python (no `kvm-ioctls`, no Aegis code) gave identical values. Both verdicts are READY.
+  - **New fixture** `wsl2-ultra9-275hx-kvm` with 3 tests, 50 tests in total.
+  - **A first draft of one test was wrong.** It compared whole CPUID snapshots between the two WSL2 captures, but leaf 1 EBX[31:24] is the initial APIC ID of whichever logical CPU ran CPUID (`0x13` vs `0x0f`). The assertion now compares vendor, brand, signature, feature flags and hypervisor leaf, with a comment explaining why.
+  - **Checks:** all pass on Windows and WSL2.
+  - **Status docs:** stale "blocked by `kvm` group" entries are updated in the README, roadmap (M1 done; M2, M3 and B0 now just "not started"), compatibility matrix, ADR-0004, the landscape report and `kvm.rs`. Earlier devlog entries are left as history.

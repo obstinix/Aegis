@@ -105,7 +105,7 @@ pyxforge.toml      PyxForge build/QEMU/GDB profiles (ADR-0009 integration point)
 - The KVM in-kernel code is part of the TCB.
 - Aegis owns the device models and the VMM process hardening.
 - WHP support (Windows host) is a separate later backend, modeled on Hyperlight's approach and added only once it can be tested.
-- **Blocker:** the WSL user must be added to the `kvm` group (owner action) before any test can run.
+- **Blocker (resolved 2026-10-26):** the WSL user had to be added to the `kvm` group before any test could run. The owner did this, and `aegis doctor` confirms `/dev/kvm` opens.
 
 ## ADR-0005: Bare-metal core: UEFI application, Intel VMX first
 
