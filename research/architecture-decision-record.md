@@ -168,6 +168,11 @@ The final signatures are fixed in M0 code review, not here.
 - **Threads.** `aegis-kvm::smp` runs one scoped thread per vCPU over a mutex-protected `DeviceBus`. The first vCPU that stops for its own reason sets the flag, and the coordinator re-sends `SIGRTMIN` (raw `tgkill`) to the others every 10 ms until they finish. These are the backend's second and third `unsafe` blocks (`gettid`, `tgkill`), each with a SAFETY comment.
 - **KVM detail:** an application processor's `KVM_RUN` returns `EAGAIN` after INIT and SIPI change its state. The backend runs it again. That's not an error.
 
+**As implemented (M6h, host threads).**
+- `smp::run` takes the stop flag from the caller, so host threads serving the guest (the stdin worker) see the stop as the vCPUs do.
+- Those threads register as `HostThread`s. The runner kicks them with `SIGRTMIN` and waits for them like vCPUs, so none outlives the run.
+- A device a host thread also reaches sits behind its own mutex (`SharedMmio`). vCPUs take the bus lock and then the device lock; host threads take only the device lock.
+
 ## ADR-0008: Devices and interrupts
 
 **Decision.**
@@ -192,6 +197,13 @@ The final signatures are fixed in M0 code review, not here.
   The tables are built only for SMP (`vcpus > 1`) or virtio. Otherwise the guest sees the unchanged M3 machine, with no ACPI.
 - **Interrupt:** GSI 5, level-triggered through the in-kernel IOAPIC with `KVM_IRQ_LINE`. The line follows `InterruptStatus`: raised for used buffers (unless the driver set `VRING_AVAIL_F_NO_INTERRUPT`) and for `DEVICE_NEEDS_RESET`, and lowered by `InterruptACK`.
 - **Queue code is Aegis's own, not `virtio-queue`.** `aegis-devices` is `no_std` and backend-neutral (ADR-0003), and its devices reach guest memory only through `aegis-core`'s `GuestMemoryAccess` trait. `virtio-queue` is built on `vm-memory`'s `GuestMemory`, which would tie the device crate to the hosted backend. The split-queue subset used is small: no indirect descriptors and no `EVENT_IDX`.
+
+**As implemented (M6h, console input).**
+- **Input path:** host bytes go into a bounded FIFO in `VirtioConsole` and are written into the guest's device-writable receive chains. The transport's `process()` lets the host start processing (new input), under the same rules as a guest notification. `aegis run` feeds it from stdin through a sandboxed worker thread in `aegis-kvm::input`, outside the `no_std` device crate.
+- **A guest driver shapes device behavior** (a deviation from building purely to the spec). Input waits for the guest's first transmit, because Linux's non-multiport virtio-console driver frees receive buffers that complete before its port is registered. The protocol-level alternative is `VIRTIO_CONSOLE_F_MULTIPORT`, with its control-queue handshake. It is not implemented; the roadmap's M6h limits explain the cost.
+- **DMA follows guest permissions:** device reads and writes through `GuestMemoryAccess` honor the memory map's read/write bits. Host-side image loads (`write_guest`) still do not, by design.
+
+## ADR-0009: Management interface: CLI only
 
 **Decision.**
 - **Binary `aegis` commands:**

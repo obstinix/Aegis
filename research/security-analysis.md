@@ -58,6 +58,14 @@ Hosted (stage 1)                          Bare metal (stage 2)
     - `tgkill`, only with `tgid` = this process and signal `SIGRTMIN`: the coordinator's kick that makes a sibling vCPU's `KVM_RUN` return `EINTR` when the guest stops. The kick is a raw `tgkill` and not `pthread_kill`, because glibc's `pthread_kill` also calls `getpid`; the first two-vCPU boot was killed on that `getpid` (`syscall=39` in the audit log), and allowing a syscall only because a C library happens to issue it was rejected. No `clone` is allowed, so a thread ID cannot be reused by a new thread while the filter is on.
     - `clock_nanosleep` and `nanosleep`, for the coordinator's 10 ms kick interval.
   - *Device input (M4h):* the virtio-mmio registers and the split virtqueue are guest-controlled. Every ring index, descriptor address, length and chain is validated with checked arithmetic against the guest memory map. Chains are bounded by the queue size and by 1 MiB, indirect descriptors are rejected, and output is capped at 64 KiB. A malformed queue sets `DEVICE_NEEDS_RESET` and stops processing; it never panics the host. All of this is unit-tested with malformed inputs, not fuzzed (see §5).
+  - *Device input (M6h):* the receive path writes host bytes into guest-chosen buffers.
+    - A receive chain must be entirely device-writable, or it is rejected before anything is written.
+    - Each call makes at most one pass over the ring, so a driver posting buffers from another vCPU cannot hold the device.
+    - Input is bounded: the device FIFO holds 4 KiB by default, the worker 1 KiB; the rest waits in the host pipe (backpressure).
+    - Device memory access now follows the memory map's read/write permissions. Before M6h it went through the image-loading path, which ignores them. This was found in the M6h review, when devices started writing guest memory.
+  - *Input worker (M6h):* stdin is read by its own thread under `input_worker_filter`, which is the run-loop allowlist plus `read` on fd 0 and `poll`/`ppoll`.
+    - The worker never blocks without bound. It polls with a 20 ms timeout, and the SMP runner's `SIGRTMIN` kick interrupts a `read` that another process's draining of the shared stdin could leave blocked.
+    - It stops delivering when the guest stops, and it is joined before the VM is torn down.
 - No network, no filesystem writes outside an explicitly named run directory. Later: optional namespace/jailer, as in Firecracker.
 - Minimal default device set: **one serial port**. Everything else is opt-in.
 

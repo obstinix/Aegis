@@ -27,6 +27,7 @@
 | **M3** | KVM: boot Linux | A bzImage + initramfs load from paths in `vm.toml` (`aegis run --config`), via the 64-bit boot protocol implemented in `aegis-kvm::boot` (originally planned with `linux-loader`; see ADR-0004 note). In-kernel irqchip + PIT2; 16550 UART. The guest prints a marker from init to the serial console within a timeout. The VMM installs a seccomp allowlist after setup; a test shows a forbidden syscall kills the process. Memory cap enforced. | WSL2 KVM | M2 | **done (tested: WSL2 Ubuntu 24.04, live KVM, WSL2 kernel 6.18.33.2 as the guest)**. See M3 detail below. |
 | M4h | KVM: multi-vCPU + virtio | 2+ vCPUs boot Linux, discovered through ACPI (MADT). A virtio-console over virtio-mmio, declared in the ACPI DSDT, carries guest output through a split virtqueue with interrupt delivery. Malformed queues and registers are handled without host panics (unit-tested). *Scope adjusted 2026-10-26; see the M4h scope note below.* | WSL2 KVM | M3 | **done (tested: WSL2, live KVM, WSL2 kernel 6.18.33.2 as the guest, 1/2/4/8 vCPUs)**. See M4h detail below. |
 | M5h | PyxisOS Track A validation | M3 tests rerun on the ThinkPad X1 Carbon (i7-7600U). Results are recorded in `compatibility-matrix.md` as hardware-tested. | Physical hardware | M3; owner runs it on that machine | not started |
+| M6h | KVM: virtio-console input | Bytes on `aegis run`'s stdin reach a Linux guest's `/dev/hvc0` through the virtio-console receive queue, and the output path is unchanged. Input buffering is bounded, with backpressure. Malformed receive chains are handled without host panics (unit-tested). The host input worker cannot outlive the run. | WSL2 KVM | M4h | **done (tested: WSL2, live KVM, WSL2 kernel 6.18.33.2 as the guest)**. See M6h detail below. |
 
 ### M0 detail (2026-10-26)
 
@@ -123,13 +124,48 @@ Fuzz targets move to a later milestone. Installing `cargo-fuzz` needs a nightly 
 | Checks | WSL2: 127/127 tests including live KVM and both Linux boots (121 plus 6 ignored without `--include-ignored`). Windows: 97/97. fmt, clippy (zero findings), docs, `no_std` none/uefi builds, and `cargo deny` pass on both. |
 
 **Known limits (stated, not hidden):**
-- virtio-console is output-only: there is no host input, and the receive queue stays empty. There is no `VIRTIO_CONSOLE_F_SIZE`, no multiport, and no `EVENT_IDX`.
+- virtio-console is output-only: there is no host input, and the receive queue stays empty. There is no `VIRTIO_CONSOLE_F_SIZE`, no multiport, and no `EVENT_IDX`. *(Input was added in M6h.)*
 - Device emulation runs on the vCPU thread, under a single bus lock. That's fine for a console, not a design for fast devices.
 - Guest output is still printed after the run, not streamed.
 - At most 8 vCPUs (the MADT builder's limit). There's no CPU hotplug, NUMA or topology leaves beyond the APIC ID. The vCPUs are not pinned.
 - The summary shows the device status at stop, which is 0. The guest's last write to `Status` was a reset; since the queues only work after `DRIVER_OK`, that reset came after all output, on the way to reboot.
 - The ACPI tables are checked by unit tests and by one guest kernel (Linux 6.18 via ACPICA). No other OS or firmware has consumed them, and no ACPI compiler (`iasl`) was run on them.
 - No fuzzing (see the scope note).
+
+### M6h detail (2026-10-26)
+
+Host input to the virtio-console, so a host-provided byte stream reaches the guest's `/dev/hvc0`. Aegis still runs guests on KVM; nothing here is bare metal.
+
+| Part | Status |
+|---|---|
+| Receive path (`aegis-devices::virtio::console`) | **done**, `no_std`, no `unsafe`. `queue_input` puts host bytes into a bounded FIFO (default 4 KiB) and returns how many it took; the caller keeps the rest (backpressure). Bytes are written in order into the driver's device-writable receive chains, each chain filled before the next. The last chain may be partly filled; its used length is the number of bytes written. A buffer is taken from the ring only when there is input for it. Each call makes at most one pass over the ring. A receive chain containing a device-readable descriptor is rejected (`QueueError::NotWritable`, then `DEVICE_NEEDS_RESET`). Bytes leave the FIFO only after the guest-memory write succeeds, so a failed write loses nothing. 13 new unit tests. |
+| Port gate | **done**. Input waits for the guest's first transmit on the port; then the receive queue is processed in the same exit. A reset closes the gate again. *Why:* Linux's non-multiport driver posts its receive buffers in `add_port()` (one kick each) before it puts the port on its list, and `in_intr()` frees any buffer that comes back for a port it cannot find. Verified in the kernel source and live: without the gate, all 32 bytes were written into guest buffers and none reached userspace. |
+| Transport (`aegis-devices::virtio::mmio`) | **done**. `process(index)` lets the host start processing, under the same rules as a guest notification (`DRIVER_OK`, no `DEVICE_NEEDS_RESET`, queue ready). `device_mut()` gives access to the device. A device can request one follow-up queue (`VirtioDevice::take_requested_queue`), bounded by the number of queues. |
+| Host input worker (`aegis-kvm::input`) | **done**. It waits with `poll` (20 ms timeout) and reads at most 1 KiB at a time, and only after `poll` reports data. Bytes the device does not take are offered again every interval; nothing more is read meanwhile. It ends at end of file, on an error, or on the stop flag, and reports bytes forwarded and bytes undelivered. Two `unsafe` libc calls (`poll`, `read`), each with a SAFETY comment. 6 unit tests over Unix socket pairs: order across chunks, backpressure, prompt stop, nothing delivered after stop, undelivered count, and an invalid descriptor reported as an error rather than a hang. |
+| Worker sandbox (`seccomp::input_worker_filter`) | **done**: the run-loop allowlist plus `read` on fd 0 and `poll`/`ppoll`, nothing else. A unit test checks that exactly those three are added, that every run-loop rule is unchanged, and that vCPU threads still cannot `read`. |
+| SMP runner (`aegis-kvm::smp`) | **done**. The stop flag is now provided by the caller. `SharedMmio` puts a device behind its own mutex: vCPUs always take the bus lock and then the device lock, and the worker takes only the device lock, so the two cannot deadlock. `HostThread` registration: once the guest stops, the runner kicks the worker with `SIGRTMIN` and waits for it like a vCPU. That covers a `read` blocked because another process drained the shared stdin between `poll` and `read`. 1 unit test kicks a thread out of a blocked `read`. |
+| DMA permissions (`GuestMemoryAccess for KvmVm`) | **done**, found in this milestone's security review. The receive path is the first device code that writes guest memory, and its accessor went through the image-loading path, which ignores guest permissions. Device reads and writes now follow the memory map's read/write permissions. Live test with an RWX region and an RX region. No effect on the Linux boot, whose map is one RWX region. |
+| `aegis run` / `vm.toml` | **done**: `virtio_console_stdin = true` (default false; requires `virtio_console = true`). The summary now reports bytes out, bytes in and pending input, plus a `stdin to hvc0:` line saying how the worker ended. 1 config test. |
+| Live test (`guest_reads_host_stdin_from_hvc0`) | **done**, about 3 s on live KVM. A NASM `/init` (`tests/guests/init_console_input.asm`) writes `READY` to hvc0, then reads two lines (with a 10 s `poll` timeout each, so a failure ends the run instead of hanging) and writes each back framed as `AEGIS_RX[...]`. The tty echoes input on its own, but never with that framing. Two vCPUs. Stdin is held **open** after the input, so the run ends only if the guest's stop also stops the worker. Asserted: both lines arrive in order, byte for byte; 32 bytes in and 0 pending; `ended by the guest stopping`; `Shutdown`; no needs-reset; 0 `KVM_IRQ_LINE` failures; exit 0. |
+| Manual live checks | Immediate end of file (`printf … \| aegis run`): both lines read; the worker `ended by end of file`. Late input, sent about 2.5 s and 3.5 s after launch (after `/init` started): both lines read, through the host-initiated path rather than the gate. |
+| Mutation checks | On scratch copies, none committed. With no port gate, the live test fails exactly as before the fix (32 bytes in, guest timeout). With a worker that ignores the stop flag, `aegis` is still running at a 20 s limit, where a normal run takes about 3 s. With the DMA write-permission check removed, the permissions test fails. |
+| Checks | Windows: 111/111 (M4h: 97; +13 console, +1 config). WSL2: 151/151 including 8 live tests (M4h: 127 with 6 live); a plain `cargo test` runs 143 and skips the 8 live ones. The WSL2 additions: +13 console, +1 config, +6 worker, +1 filter, +1 kick, +1 live input boot, +1 live permissions test. fmt, clippy (zero findings), docs, `no_std` none/uefi builds and `cargo deny` pass on both. No new dependencies. |
+
+**Known limits (stated, not hidden):**
+- The guest receives input only after it has written to hvc0 (the port gate). A guest that reads before it ever writes gets nothing. A getty or shell prompt, or this test's `/init`, writes first. The protocol-level fix is `VIRTIO_CONSOLE_F_MULTIPORT`, whose control queue reports `PORT_READY`/`PORT_OPEN`; it is not implemented.
+- With `console=hvc0`, kernel messages could open the gate during the driver's probe, bringing the race back. The default command line uses `console=ttyS0`.
+- Not an interactive terminal: guest output is still printed after the run, and stdin is forwarded as raw bytes, with no raw mode and no Ctrl-C passthrough. The guest's tty echoes the input into its output.
+- Input not delivered when the guest stops is discarded and reported (`pending`, `read but not delivered`).
+- One console port; no `VIRTIO_CONSOLE_F_SIZE`, no `EVENT_IDX`, no fuzzing.
+- M5h (hardware validation on the ThinkPad) is still not started; nothing here was run on that machine.
+
+**Deviations from the ADRs:** see the ADR-0007 and ADR-0008 M6h notes (`smp::run` signature; the port gate; DMA permissions). The two new `unsafe` blocks follow ADR-0002: backend crate only, each with a SAFETY comment.
+
+**Remaining work toward B0 (not started).** The prerequisites are present in WSL2 (checked 2026-10-26): `qemu-system-x86_64`, OVMF (`/usr/share/OVMF/OVMF_CODE_4M.fd`), `kvm_intel` with `nested=Y`, and the pinned `x86_64-unknown-uefi` target. Still to build:
+1. An `aegis-uefi` crate that prints a marker over serial.
+2. `cargo xtask uefi-test`, which builds it, makes a FAT image (tool not chosen; nothing installed), boots it in QEMU with OVMF, captures serial to a file, asserts the marker and enforces a timeout.
+
+M6h neither depends on B0 nor changes it.
 
 ## Track B: bare metal (VMX, UEFI)
 
@@ -166,7 +202,7 @@ Fuzz targets move to a later milestone. Installing `cargo-fuzz` needs a nightly 
 |---|---|---|
 | v0.1.0 | M0–M3 | *Experimental.* Hosted KVM on Linux, tested in WSL2 only, unless M5h has run. |
 | v0.2.0 | B0–B3 | *Experimental.* Bare-metal VMX tested nested under KVM only. |
-| v0.3.0 | M4h, B4–B5, I1 | Experimental |
+| v0.3.0 | M4h, M6h, B4–B5, I1 | Experimental |
 
 Each release ships release notes listing what was tested where, and known limitations.
 

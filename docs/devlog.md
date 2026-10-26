@@ -209,3 +209,37 @@ Honest record of how work was done, including AI assistance. Commit metadata sta
   - an unused import.
 - **Checks:** all pass on Windows and WSL2 (counts in the roadmap's M4h detail).
 - **Not done:** virtio-console input; streaming output; virtio-blk (the kernel builds it as a module); fuzzing; B0. No push yet.
+
+## 2026-10-26: Phase 4, M6h (virtio-console input)
+
+- **Assistance:** Claude Code (model `claude-opus-5-5`), same session.
+  - Written from the virtio 1.2 specification (§5.3 console, §2.7 split virtqueues). No third-party code was copied.
+  - Linux's `drivers/char/virtio_console.c` (mainline, GPL-2.0) was read only to understand a guest behavior. Nothing was taken from it.
+- **Baseline checked first:** `main` = `origin/main` = `e9c5a3d`, clean tree, no stashes. The M4h claims were verified in this session at that commit.
+- **Design:**
+  - **Device:** a bounded input FIFO in `VirtioConsole` (`no_std`); the receive queue is filled only when there is input.
+  - **Transport:** `process()` for host-initiated work.
+  - **Host:** a stdin worker in `aegis-kvm::input` (`poll` + `read`, backpressure) under its own seccomp filter; the device sits behind its own mutex.
+  - **Config:** `vm.toml` gains `virtio_console_stdin`, off by default.
+  - No new dependencies.
+- **Live finding: the guest dropped input.**
+  - The first live run hung with the guest blocked in `read()`. A 10 s `poll` timeout in the test `/init` turned the hang into a diagnosis: "32 bytes in, 0 pending", meaning the device had written every byte into guest buffers, yet userspace saw none.
+  - Reading the driver showed why. Without multiport, `add_port()` posts receive buffers, kicking after each one, before it lists the port, and `in_intr()` frees any buffer that completes for a port it cannot find. The device had answered the first kick.
+  - Fix: the receive path opens on the guest's first transmit, and the receive queue is processed in that same exit.
+  - A mutant without the gate reproduces the original failure exactly.
+  - This is a documented deviation: device behavior shaped by one guest driver. The protocol-level fix (multiport) is not implemented.
+- **Security review findings, both fixed:**
+  - **DMA permissions:** device memory access ignored the memory map's read/write permissions, because it went through the image-loading path. Writes now need write permission and reads need read permission. A live test with an RWX region and an RX region covers it, and a mutant without the check fails that test.
+  - **Shutdown:** a `read` could stay blocked if another process drained the shared stdin between `poll` and `read`. The worker now registers as an SMP `HostThread` and is kicked out like a vCPU. A unit test kicks a thread out of a blocked `read`.
+- **Doc repair:**
+  - My M4h edit of ADR-0008 had dropped the `## ADR-0009` heading line in the published `e9c5a3d`, so ADR-0009 read as part of ADR-0008. The heading is restored, and the text below it is byte-identical to `5a78586`. A check of every document M4h touched found no other lost heading.
+  - The `aegis-kvm` crate docs still said there was one `unsafe` operation and that no device serves MMIO; both are corrected.
+- **Other fixes:**
+  - a test assertion that a `sed` edit split with a literal newline;
+  - a test of the worker filter that checked a copy of the rule set instead of the real one, which now has an `input_worker_rules()` function to test;
+  - a clippy semicolon.
+- **Results:** see the roadmap's M6h detail for counts.
+  - Windows: 111/111.
+  - WSL2: 151/151 with 8 live tests (143 run in a plain `cargo test`).
+  - Live checks also run by hand: immediate end of file; late input; 1/2/4/8-vCPU boots unaffected.
+- **Not done:** multiport; interactive terminal use (output is not streamed); `VIRTIO_CONSOLE_F_SIZE`; fuzzing; B0 (its prerequisites are present in WSL2); M5h (hardware). No push yet; it awaits owner approval.
