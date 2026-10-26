@@ -38,7 +38,7 @@
 | `cargo fmt --all --check` | **passed** |
 | `cargo doc` with `-D warnings` | **passed** |
 | `no_std` proof: build and clippy for `x86_64-unknown-none` (installed target) | **passed** |
-| Build for `x86_64-unknown-uefi` | **not run**: target not installed (`E0463`). Needs owner approval for `rustup target add x86_64-unknown-uefi`. |
+| Build for `x86_64-unknown-uefi` | **passed** (debug + release + clippy `-D warnings`). Target added with `rustup target add x86_64-unknown-uefi` on the stable toolchain, owner-approved 2026-10-26. |
 | Toolchain pin (`rust-toolchain.toml`) | **not done**: pinning `1.97.0` would download a separately named toolchain. `rust-version = "1.97"` is set in `Cargo.toml` meanwhile. Needs owner approval. |
 | `cargo deny check` | **not run**: `cargo-deny` not installed. No dependencies exist yet. |
 | Same checks in WSL2 | **not run**: no Rust in WSL2 |
