@@ -28,3 +28,19 @@ Honest record of how work was done, including AI assistance. Commit metadata sta
   - Recommended direction is staged: rust-vmm on KVM first, with a clean-room bare-metal VMX core developed alongside.
   - The WSL user can't open `/dev/kvm`. This needs an owner action.
 - **Not done:** no pushes, no installs, no architecture decision (that's Phase 3).
+
+## 2026-10-26: Phase 3 architecture decision
+
+- **Assistance:** Claude Code (model `claude-opus-5-5`), same session.
+- **Owner direction:** proceed with the staged recommendation. This is recorded as ADR-0001 Accepted.
+- **Written:** `research/architecture-decision-record.md` (ADR-0001 to ADR-0012) and `research/development-roadmap.md`. These cover tracks H, B, W and integration, plus releases and the owner actions that unblock them.
+- **README:** aligned with the accepted ADRs:
+  - staged identity;
+  - the decided design table, replacing the open decisions;
+  - stable Rust;
+  - the crate layout;
+  - the WSL `kvm` group note;
+  - two new status rows, both still "Not started".
+- **Proposed, awaiting the owner:** ADR-0011 (add a `LICENSE` file) and ADR-0012 (canonical home relative to `PyxisOS/native/aegis`).
+- **Process note:** the five Phase 1 and Phase 2 commits didn't use the Conventional Commits format that the README's Contributing section asks for. They are left as-is, since rewriting history needs owner authorization. Phase 3 commits onward use it.
+- **Not done:** no code, no pushes, no installs.
