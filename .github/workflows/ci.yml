@@ -1,0 +1,138 @@
+# Continuous integration (ADR-0010).
+#
+# Runs on GitHub-hosted Linux and Windows: formatting, clippy, the
+# workspace's unit and integration tests, docs, the no_std and UEFI builds,
+# the reproducible-UEFI-image check, and cargo-deny.
+#
+# The live KVM tests (#[ignore]d; `cargo test -- --include-ignored`) and
+# the nested QEMU/KVM harness (`cargo xtask uefi-test`) stay local-only, as
+# ADR-0010 requires: they need an openable /dev/kvm and, for the harness,
+# nested virtualization and OVMF.
+#
+# Do not set RUSTFLAGS here: it would replace the UEFI link flags in
+# .cargo/config.toml, which make the image reproducible (`repro-test`
+# catches that).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # rustup reads rust-toolchain.toml: 1.97.0 with clippy, rustfmt and the
+      # x86_64-unknown-uefi and x86_64-unknown-none targets.
+      - name: Install the pinned toolchain
+        shell: bash
+        run: |
+          rustup toolchain install
+          rustc --version
+          cargo --version
+
+      - name: Cache cargo registry and build output
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      # Live KVM tests are #[ignore]d and do not run here (ADR-0010). On
+      # Windows, the Linux-only crates and tests compile to empty stubs.
+      - name: Tests
+        run: cargo test --workspace --all-features
+
+      - name: Docs
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+      - name: no_std and UEFI builds
+        shell: bash
+        run: |
+          set -euo pipefail
+          for target in x86_64-unknown-none x86_64-unknown-uefi; do
+            for crate in aegis-core aegis-devices aegis-probe; do
+              cargo build -p "$crate" --no-default-features --target "$target"
+              cargo build -p "$crate" --no-default-features --target "$target" --release
+              cargo clippy -p "$crate" --no-default-features --target "$target" -- -D warnings
+            done
+          done
+          cargo build -p aegis-uefi --target x86_64-unknown-uefi
+          cargo build -p aegis-uefi --target x86_64-unknown-uefi --release
+          cargo clippy -p aegis-uefi --target x86_64-unknown-uefi -- -D warnings
+
+      # Two clean builds of aegis-uefi.efi (debug and release) and their FAT
+      # images must be byte-identical (security analysis §4).
+      - name: Reproducible UEFI image
+        run: cargo xtask repro-test
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_DENY_VERSION: 0.20.2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install
+          cargo --version
+
+      - name: Cache cargo-deny
+        id: cache-deny
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-deny
+          key: ${{ runner.os }}-cargo-deny-${{ env.CARGO_DENY_VERSION }}
+
+      # The same version used locally, built from crates.io with its own
+      # lockfile.
+      - name: Install cargo-deny
+        if: steps.cache-deny.outputs.cache-hit != 'true'
+        run: cargo install --locked cargo-deny --version "$CARGO_DENY_VERSION"
+
+      # Licences (ADR-0011 allowlist), RustSec advisories, bans and sources,
+      # per deny.toml.
+      - name: cargo deny check
+        run: cargo deny check
