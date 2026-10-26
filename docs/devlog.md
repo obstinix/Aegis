@@ -243,3 +243,33 @@ Honest record of how work was done, including AI assistance. Commit metadata sta
   - WSL2: 151/151 with 8 live tests (143 run in a plain `cargo test`).
   - Live checks also run by hand: immediate end of file; late input; 1/2/4/8-vCPU boots unaffected.
 - **Not done:** multiport; interactive terminal use (output is not streamed); `VIRTIO_CONSOLE_F_SIZE`; fuzzing; B0 (its prerequisites are present in WSL2); M5h (hardware). No push yet; it awaits owner approval.
+
+## 2026-10-26: Phase 4, B0 (nested test harness)
+
+- **Assistance:** Claude Code (model `claude-opus-5-5`), same session. Started on the owner's "continue" after the M6h push.
+  - The FAT writer follows Microsoft's FAT specification (fatgen103), and the UEFI calls follow UEFI 2.10. No third-party code was copied.
+  - The `uefi` 0.41 and `uefi-raw` 0.17 sources were read to confirm the APIs and the types used.
+- **Prerequisites checked, not assumed.**
+  - Present in WSL2: QEMU 8.2.2, OVMF 2024.02 (including a combined `/usr/share/ovmf/OVMF.fd`, so `-bios` works as the criterion says), `kvm_intel nested=Y`, and the pinned UEFI target.
+  - Absent: any FAT tools (`mtools`, `dosfstools`).
+- **Licence finding.** ADR-0003 names the `uefi` crate, but `uefi` 0.41 always depends on `ucs2` 0.3.3, which is MPL-2.0 and outside the ADR-0011 allowlist.
+  - Rather than change licence policy, `aegis-uefi` uses `uefi-raw` 0.17 (MIT OR Apache-2.0, depending only on allowed crates), with three small `unsafe` blocks.
+  - Allowing `ucs2` is left as an owner decision, recorded in the ADR-0003 note and the licensing review.
+- **No tool installs.** `xtask` writes the FAT16 image itself, the way M3 wrote the boot protocol instead of using `linux-loader`. It has unit tests that parse the image back.
+- **Result.** `cargo xtask uefi-test` passed on its first live run, and 10/10 repeats passed.
+  - OVMF loaded `BOOTX64.EFI` from the generated image, the app printed `AEGIS_B0_HELLO` (UEFI 2.70), and the VM powered itself off in about 0.6 s.
+  - Three failure mutants (wrong marker, no power-off, misnamed boot file) each failed with the reason and the serial log, and left no QEMU behind.
+  - In the misnamed-file run, the UEFI shell mounted the image as `FS0:`, independent evidence that the FAT16 volume is valid.
+- **Reproducibility.** It wasn't reproducible at first: two builds differed in 10 bytes, even in one directory.
+  - `cmp` traced the difference to lld-link's timestamp and per-build PDB debug directory. `/Brepro` alone was not enough; `/Brepro /DEBUG:NONE` gives byte-identical EFI binaries and images across target directories and rebuilds.
+  - This holds on one host only (Windows and Linux builds differ), and it was checked by hand. So README Phase 0 stays unticked, with a note saying why.
+- **Smaller fixes:**
+  - clippy `arithmetic_side_effects` in the FAT writer, removed by restructuring rather than allow-listed;
+  - an unused constant;
+  - `Duration::from_mins`;
+  - `assert_eq!`.
+- **Checks:**
+  - Windows: 123/123.
+  - WSL2: 163/163 with 8 live tests (155 run in a plain `cargo test`), plus `uefi-test`.
+  - fmt, clippy (including `aegis-uefi` for the UEFI target), docs, the `no_std` builds and `cargo deny` pass on both.
+- **Not done:** VMX (B1); CI; PDB symbols for debugging; the `ucs2` licence decision. No push yet; it awaits owner approval.

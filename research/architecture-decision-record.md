@@ -94,6 +94,13 @@ pyxforge.toml      PyxForge build/QEMU/GDB profiles (ADR-0009 integration point)
 - `aegis-core` depends on nothing platform-specific. Both backends depend on `aegis-core`, never on each other.
 - The CLI selects a backend at runtime, based on `aegis-probe` results and the config.
 
+**As implemented (B0).**
+- **`aegis-uefi` uses `uefi-raw`, not `uefi`.** `uefi` 0.41 always depends on `ucs2` 0.3.3, which is MPL-2.0 and outside the ADR-0011 licence allowlist. `uefi-raw` 0.17, from the same project, has the raw UEFI type definitions under MIT OR Apache-2.0, and depends only on `bitflags` and `uguid` (both allowed).
+  - B0 needs three firmware accesses, written as small `unsafe` blocks; ADR-0002 allows `unsafe` in the bare-metal crate.
+  - Allowing MPL-2.0 for `ucs2` (unmodified, as a dependency) and switching to `uefi` is an owner decision, and an easy switch at this size.
+- **`xtask/`** exists, with `cargo xtask` as an alias in `.cargo/config.toml`. It writes the FAT image itself (FAT16, fatgen103 layout), so no FAT tools need installing.
+- **UEFI builds link with `/Brepro /DEBUG:NONE`** so the image is reproducible. The cost is no PDB.
+
 ## ADR-0004: Hosted backend: Linux KVM via rust-vmm
 
 **Decision.**
@@ -232,6 +239,13 @@ The final signatures are fixed in M0 code review, not here.
 - **Skips are reported as skips.** A KVM test that cannot open `/dev/kvm` prints the reason and is counted as skipped. It never passes silently. CI summaries list skipped suites.
 - **CI** (GitHub Actions, once the owner enables pushes): fmt, clippy, unit, mock, `cargo deny`. KVM tests on GitHub-hosted Linux runners need `/dev/kvm` access; ⚠️ this is believed possible but **not verified**. Until it is, KVM and nested tests are local-only and labeled that way.
 - **Tests are never deleted or weakened to make CI pass** (directive §11).
+
+**As implemented (B0, nested bare-metal layer).** `cargo xtask uefi-test`:
+- builds `aegis-uefi.efi` and a FAT16 image;
+- boots it with `qemu-system-x86_64 -enable-kvm -cpu host -bios OVMF.fd`, serial to a file;
+- passes only if the marker appears and the VM powers itself off within the timeout.
+
+A missing prerequisite (not Linux, `/dev/kvm`, QEMU, OVMF) prints `SKIPPED: <reason>` and exits 77, so a skip never looks like a pass. Failures print the escaped serial log. The harness is run by hand (local-only, as this ADR expects until CI has `/dev/kvm`).
 
 ## ADR-0011: Licensing: Apache-2.0 outbound (Proposed)
 

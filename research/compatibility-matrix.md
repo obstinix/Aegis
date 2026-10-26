@@ -26,7 +26,7 @@
 | Intel VMX (bare-metal core) | VMXON / VMCS / VMLAUNCH / exits: CPUID, HLT, I/O, EPT violation | planned (experimental track) |
 | AMD SVM (bare-metal core) | Same subset, via TCG first | planned (later than VMX) |
 | EPT / NPT | Required. Identity or explicit GPA→HPA maps; 4 KiB + 2 MiB pages | planned |
-| Firmware / boot | Hosted: n/a. Bare metal: UEFI only (OVMF in QEMU). **Legacy BIOS: unsupported.** | planned / unsupported |
+| Firmware / boot | Hosted: n/a. Bare metal: UEFI only (OVMF in QEMU). **Legacy BIOS: unsupported.** | bare metal: **tested** booting under OVMF 2024.02 in QEMU 8.2.2, KVM nested in WSL2 (B0; the app reports and powers off, no VMX yet). Legacy BIOS: unsupported |
 | IOMMU (VT-d / AMD-Vi) | **No device passthrough in the first release.** Without IOMMU enforcement, passthrough is unsafe. | unsupported (until a dedicated milestone) |
 | Interrupt controller | Hosted: KVM in-kernel irqchip (`KVM_CREATE_IRQCHIP`). Bare metal: no APICv dependency (it isn't available nested here). Software LAPIC/x2APIC exits later. | planned |
 | SMP | Hosted: 1–8 vCPUs, described to the guest in ACPI (MADT); one host thread per vCPU (M4h). Bare metal: BSP only at first. | hosted: **tested** (WSL2 KVM, Linux 6.18 guest, 1/2/4/8 vCPUs). Bare metal: planned |

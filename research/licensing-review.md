@@ -66,7 +66,10 @@ Everything below assumes **Apache-2.0 outbound**.
 | `syn` 2 | 2.0.119 | MIT OR Apache-2.0 | Build-time only, for `zerocopy-derive`. It duplicates `syn` 3.0.9 (used by `serde_derive` and `thiserror-impl`); `cargo deny` reports this as a warning, since `multiple-versions = "warn"`. Not in any binary. |
 | `mshv-ioctls` | 0.7.1 | Apache-2.0 OR BSD-3-Clause | MSHV backend (optional, later) |
 | `windows-sys` | 0.61.2 | MIT OR Apache-2.0 | WHP backend (later) |
-| `uefi` | 0.41.0 | MIT OR Apache-2.0 | UEFI app for the bare-metal core |
+| `uefi` | 0.41.0 | MIT OR Apache-2.0 | **Not used** (B0): it always depends on `ucs2`, below. Owner decision pending on allowing that. |
+| `ucs2` | 0.3.3 | **MPL-2.0** | **Not used.** Outside the allowlist. MPL-2.0 is file-level copyleft: using it unmodified as a dependency is compatible with Apache-2.0 outbound, but distributed binaries must point to its source, and modified files stay MPL-2.0. Allowing it needs an explicit `deny.toml` exception, which is the owner's call. |
+| `uefi-raw` | 0.17.0 | MIT OR Apache-2.0 | Raw UEFI type definitions for `aegis-uefi` (B0, UEFI target only) |
+| `uguid` | 2.2.1 | MIT OR Apache-2.0 | Pulled in by `uefi-raw` |
 | `x86_64` | 0.16.0-rc.0 | MIT/Apache-2.0 | Paging/registers (bare metal) |
 | `x86` | 0.52.0 | MIT | VMX/MSR definitions (last release 2022-10, so maintenance risk) |
 | `raw-cpuid` | 11.6.0 | MIT | CPUID decoding |

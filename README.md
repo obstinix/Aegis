@@ -33,6 +33,7 @@ written to understand, and then own, the boundary between hardware and execution
 | `aegis-devices` (16550 UART, transmit-only; virtio-mmio transport, split virtqueue, virtio-console output and input) | 🟡 Implemented, `no_std`; 35 tests (mock memory and interrupt line), and driven by real KVM guests and Linux boots. Console input reaches the guest once it has written to `/dev/hvc0` (see the roadmap's M6h limits). |
 | `aegis doctor` capability report | 🟢 Done (M1): tested live and with fixtures on Windows and WSL2, including KVM API version and extension queries. |
 | Hosted KVM backend (stage 1) | 🟡 M3, M4h and M6h done: `aegis run --config vm.toml` boots a Linux bzImage + initramfs to `/init` under KVM, with in-kernel irqchip/PIT, a UART console and a seccomp allowlist. With `vcpus = 2..8` the vCPUs are described in ACPI (MADT) and each runs on its own sandboxed thread; `virtio_console = true` adds a virtio-console over virtio-mmio, declared in the ACPI DSDT. `virtio_console_stdin = true` forwards `aegis run`'s stdin to the guest's `/dev/hvc0` (M6h). Tested live in WSL2 with 1, 2, 4 and 8 vCPUs. Not yet tested on physical hardware (M5h). |
+| Bare-metal UEFI core (`aegis-uefi`) and nested test harness | 🟡 B0 done: `cargo xtask uefi-test` boots the UEFI application under QEMU/KVM with OVMF, nested in WSL2. It passes when the app's serial marker appears and the VM powers itself off. The app does no virtualization yet. |
 | VMX / SVM capability checks  | ⚪ Not started  |
 | VMX operation (VMXON)        | ⚪ Not started  |
 | First guest (VMLAUNCH)       | ⚪ Not started  |
@@ -144,6 +145,7 @@ The detailed milestone plan, including the hosted KVM track that comes first, is
 - [ ] **Phase 0 · Foundations**
   Repo layout, toolchain, CI, serial logging.
   *Done when:* a bootable image builds reproducibly and prints to serial under QEMU.
+  *Status:* the image boots and prints under QEMU, tested by `cargo xtask uefi-test` (roadmap B0). It also builds reproducibly on one host, but that was checked by hand, not by a test in the repo, and there is no CI yet. So the box stays unticked.
 
 - [ ] **Phase 1 · Capability detection**
   Intel: `CPUID.1:ECX[5]` (VMX), `IA32_FEATURE_CONTROL` (MSR `0x3A`) lock/enable bits, `IA32_VMX_BASIC` (MSR `0x480`).
@@ -174,7 +176,15 @@ AMD SVM support follows the same phases once the arch layer is stable on the fir
 
 ## Development environment
 
-*Planned. Commands will be added once Phase 0 lands.*
+Common commands, from the repository root:
+
+```text
+cargo test --workspace                          # unit and mock tests (any host)
+cargo test --workspace -- --include-ignored     # plus live KVM tests (Linux with /dev/kvm)
+cargo xtask uefi-test                           # boot aegis-uefi under QEMU/KVM + OVMF (Linux; here, WSL2)
+cargo run -p aegis-cli -- doctor                # what this host can run
+cargo run -p aegis-cli -- run --config vm.toml  # boot a Linux guest under KVM (Linux)
+```
 
 | Tool                     | Purpose                                                            |
 | ------------------------ | ------------------------------------------------------------------ |
@@ -188,9 +198,9 @@ AMD SVM support follows the same phases once the arch layer is stable on the fir
 WSL2 VM, and `/dev/kvm` to be available inside WSL. Your WSL user must also be in the `kvm` group:
 `/dev/kvm` is `root:kvm 660`. Without it, fall back to Bochs.
 
-### Planned layout
+### Layout
 
-From [ADR-0003](research/architecture-decision-record.md#adr-0003-workspace-layout-and-crate-boundaries):
+From [ADR-0003](research/architecture-decision-record.md#adr-0003-workspace-layout-and-crate-boundaries); all of these exist now:
 
 ```text
 Aegis/

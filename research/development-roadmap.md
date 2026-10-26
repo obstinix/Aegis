@@ -171,7 +171,7 @@ M6h neither depends on B0 nor changes it.
 
 | # | Milestone | Acceptance criteria | Environment | Depends on | Status |
 |---|---|---|---|---|---|
-| **B0** | Nested test harness | `cargo xtask uefi-test` builds `aegis-uefi.efi`, creates a FAT image, boots it in WSL2 `qemu-system-x86_64 -enable-kvm -cpu host -bios OVMF`, captures serial to a file, asserts a "hello" marker, and enforces a timeout. Failure output includes the serial log. | WSL2 QEMU/KVM | M0 | not started |
+| **B0** | Nested test harness | `cargo xtask uefi-test` builds `aegis-uefi.efi`, creates a FAT image, boots it in WSL2 `qemu-system-x86_64 -enable-kvm -cpu host -bios OVMF`, captures serial to a file, asserts a "hello" marker, and enforces a timeout. Failure output includes the serial log. | WSL2 QEMU/KVM | M0 | **done (tested: WSL2, QEMU 8.2.2 with KVM nested in WSL2, OVMF 2024.02)**. See B0 detail below. |
 | **B1** | VMX capability + VMXON | In the L2 guest: checks CPUID.1:ECX.VMX and `IA32_FEATURE_CONTROL` (lock/enable bits); reads `IA32_VMX_BASIC` and the true-controls MSRs; applies the CR0/CR4 fixed bits; VMXON; VMXOFF; reports each step over serial. Clean failure paths are tested by forcing each check to fail (unit-tested decision logic over captured MSR values). | WSL2 nested | B0 | not started |
 | **B2** | First guest | VMCS with deny-by-default MSR and I/O bitmaps; EPT built from a guest memory map (ADR-0006) and walked by a test to prove hypervisor pages are absent; a guest running a few instructions → `CPUID` exit (handled) → `HLT` exit (stop). VM-entry failures report the VM-instruction error. | WSL2 nested | B1 | not started |
 | **B3** | Shared interfaces | `aegis-uefi` implements the ADR-0007 `Vm`/`VmExit` model; the same `aegis-core` dispatch tests run against both backends' exit streams | Any + nested | B2, M2 | not started |
@@ -179,6 +179,34 @@ M6h neither depends on B0 nor changes it.
 | B5 | Boot a guest kernel | Load a minimal 64-bit test kernel (later Linux) after `ExitBootServices`; long-mode guest state setup | WSL2 nested | B4 | not started |
 | B6 | AMD SVM | Verify QEMU TCG SVM support first; then VMRUN + NPT with the B1/B2 criteria | QEMU TCG (to verify) | B2 | not started |
 | B7 | Physical hardware | B2 criteria on the ThinkPad (i7-7600U) from a USB EFI boot | Physical hardware | B2; owner | not started |
+
+### B0 detail (2026-10-26)
+
+The bare-metal track's test harness. The application it boots does no virtualization yet; VMX is B1.
+
+| Part | Status |
+|---|---|
+| `aegis-uefi` (`crates/aegis-uefi`) | **done**. A `no_std`/`no_main` UEFI application (`aegis-uefi.efi`, 7.5 KiB release, 14 KiB debug). It prints `AEGIS_B0_HELLO`, the UEFI revision and the firmware revision on the firmware console, then powers the machine off with `ResetSystem(EfiResetShutdown)`. Firmware access goes through `uefi-raw` types, with three `unsafe` blocks (system-table dereference, `OutputString`, `ResetSystem`), each with a SAFETY comment. On other targets it builds as a stub that explains itself, so `cargo test --workspace` works everywhere. |
+| FAT image (`xtask/src/fat.rs`) | **done**. A deterministic 16 MiB FAT16 superfloppy (no partition table) holding only `\EFI\BOOT\BOOTX64.EFI`, laid out per Microsoft's FAT specification. It is written by `xtask` because no FAT tools (`mtools`, `dosfstools`) are installed and none are needed. 6 unit tests parse it back using layout values read from the image itself: FAT16 cluster count, fatgen103's FAT-size formula, byte-for-byte read-back across cluster boundaries, the maximum size and one byte over, an empty file, `.`/`..` links, both FAT copies identical, determinism. |
+| Harness (`cargo xtask uefi-test`) | **done**. The steps:<br>1. Check prerequisites; a missing one (not Linux, `/dev/kvm` not openable, no QEMU, no OVMF) is reported as **SKIPPED**, exit 77, never a pass.<br>2. Build the EFI app and write the image.<br>3. Run `qemu-system-x86_64 -nodefaults -machine q35 -enable-kvm -cpu host -smp 1 -m 256M -display none -no-reboot -bios /usr/share/ovmf/OVMF.fd`, with the image read-only on virtio-blk and serial to a file.<br>4. Pass only if the marker is in the serial log **and** QEMU exited by itself within the timeout (default 60 s, `--timeout`).<br>Any failure prints the reason, the QEMU command, the escaped serial log and QEMU's stderr. A stale log is deleted first. 6 unit tests cover argument parsing, the verdict logic, the QEMU command line, firmware lookup, log escaping and finding the artifact in cargo's JSON. |
+| Live run | **PASSED** in about 0.6 s of QEMU time (about 6 s with the build); 10/10 repeated runs passed. OVMF's boot manager loaded `BOOTX64.EFI` from the image (`BdsDxe: starting Boot0001 … PciRoot(0x0)/Pci(0x1,0x0)`), and the app reported UEFI 2.70 (`0x00020046`). This is nested virtualization: the app ran under QEMU/KVM inside the WSL2 VM. On Windows, `uefi-test` reports SKIPPED (exit 77). |
+| Failure paths (mutation checks) | On scratch copies, none committed. Each run failed with exit 1, the reason and the serial log, and no QEMU process was left running:<br>- Wrong marker text: `QEMU exited normally, but AEGIS_B0_HELLO is not in the serial log`.<br>- No power-off: `appeared, but the VM did not power off within 8 s`; QEMU was killed at the deadline.<br>- Boot file misnamed in the image: OVMF logs `failed to load Boot0001 … Not Found` and starts its shell, and the harness times out. That shell mapped the image as `FS0:`, which is independent evidence that the FAT16 volume is valid. |
+| Reproducible builds | **done (same host)**. `.cargo/config.toml` links UEFI builds with `/Brepro` (no timestamp) and `/DEBUG:NONE` (no per-build PDB reference). Two builds in different target directories, and a later rebuild, give a byte-identical `aegis-uefi.efi` and `esp.img`. Builds on Windows and Linux still differ from each other. This was checked by hand; it is not an automated test. |
+| Checks | Windows: 123/123 (M6h: 111; +12 `xtask` tests). WSL2: 163/163 including 8 live tests (M6h: 151); a plain `cargo test` runs 155 and skips the 8 live ones. Plus `cargo xtask uefi-test`. fmt, clippy (zero findings, including `aegis-uefi` for the UEFI target, debug and release), docs, the `no_std` builds and `cargo deny` pass on both. |
+
+**Deviations (recorded in the ADR-0003 and ADR-0010 notes):**
+- `uefi-raw` instead of the `uefi` crate, for licence reasons.
+- The FAT image is written by `xtask`.
+- A pass also requires a clean power-off, which is stricter than the criterion.
+- Skips exit with 77.
+
+**Known limits:**
+- No VMX, no memory allocation, no `ExitBootServices`; the app only reports and powers off.
+- A panic spins, leaving the harness to time out, because the panic handler has no console.
+- The serial marker depends on OVMF mirroring its console to the serial port, as it does by default.
+- QEMU option syntax cannot carry commas, so a path containing one is rejected.
+- No PDB symbols for the EFI app (the price of reproducible builds).
+- No CI.
 
 ## Track W: Windows host (later)
 
