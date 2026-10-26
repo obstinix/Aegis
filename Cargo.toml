@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/aegis-core", "crates/aegis-devices", "crates/aegis-kvm", "crates/aegis-probe", "crates/aegis-cli", "crates/aegis-uefi", "xtask"]
+# A workspace of its own (docs/fuzzing.md), so normal builds never see it.
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.0.0"

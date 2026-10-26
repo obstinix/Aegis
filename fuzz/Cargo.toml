@@ -1,0 +1,74 @@
+# Fuzz harnesses for Aegis (docs/fuzzing.md).
+#
+# Not part of the main workspace: normal builds, `cargo test --workspace`
+# and `cargo deny check` never see this crate or its dependencies.
+#
+# - Default build (stable Rust): the harness library, its deterministic
+#   smoke and regression tests, and a replayer for saved inputs.
+#     cargo test --manifest-path fuzz/Cargo.toml
+#     cargo run --manifest-path fuzz/Cargo.toml --example reproduce -- <target> <input>
+#   This needs no fuzzing tools and never builds libfuzzer-sys.
+# - `--features libfuzzer`: also the cargo-fuzz targets. These need nightly
+#   Rust, cargo-fuzz and a C++ compiler (libfuzzer-sys builds libFuzzer).
+#     cargo +nightly fuzz run --features libfuzzer virtqueue
+
+[package]
+name = "aegis-fuzz"
+description = "Fuzz harnesses for the virtqueue, the virtio-mmio registers and the vm.toml parser."
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97"
+license = "Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# A workspace of its own, so the main workspace does not pick it up.
+[workspace]
+
+[features]
+# The cargo-fuzz targets. libfuzzer-sys's metadata says
+# "(MIT OR Apache-2.0) AND NCSA" (its bundled libFuzzer files are tagged
+# Apache-2.0 WITH LLVM-exception); the ADR-0011 allowlist names neither.
+# It is used only here, for fuzzing, never in an Aegis binary
+# (research/licensing-review.md §3.2).
+libfuzzer = ["dep:libfuzzer-sys"]
+
+[dependencies]
+aegis-core = { path = "../crates/aegis-core", features = ["mock"] }
+aegis-devices = { path = "../crates/aegis-devices" }
+libfuzzer-sys = { version = "0.4.13", optional = true }
+# The same versions as aegis-cli, for its config parser (included by path).
+serde = { version = "1.0.229", features = ["derive"] }
+toml = { version = "1.1.8", default-features = false, features = ["parse", "serde", "std"] }
+
+[[bin]]
+name = "virtqueue"
+path = "fuzz_targets/virtqueue.rs"
+required-features = ["libfuzzer"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "virtio_mmio"
+path = "fuzz_targets/virtio_mmio.rs"
+required-features = ["libfuzzer"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vm_toml"
+path = "fuzz_targets/vm_toml.rs"
+required-features = ["libfuzzer"]
+test = false
+doc = false
+bench = false
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }

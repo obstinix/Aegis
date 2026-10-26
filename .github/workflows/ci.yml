@@ -2,7 +2,9 @@
 #
 # Runs on GitHub-hosted Linux and Windows: formatting, clippy, the
 # workspace's unit and integration tests, docs, the no_std and UEFI builds,
-# the reproducible-UEFI-image check, and cargo-deny.
+# the reproducible-UEFI-image check, the fuzz harnesses' stable smoke tests,
+# and cargo-deny. Coverage-guided fuzzing itself stays local
+# (docs/fuzzing.md).
 #
 # The live KVM tests (#[ignore]d; `cargo test -- --include-ignored`) and
 # the nested QEMU/KVM harness (`cargo xtask uefi-test`) stay local-only, as
@@ -63,7 +65,8 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+            fuzz/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'fuzz/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
 
@@ -102,6 +105,18 @@ jobs:
       # images must be byte-identical (security analysis §4).
       - name: Reproducible UEFI image
         run: cargo xtask repro-test
+
+      # The fuzz harnesses (docs/fuzzing.md) on stable, without libFuzzer:
+      # their deterministic smoke tests and the saved crash inputs under
+      # fuzz/regressions/. fuzz/ is a workspace of its own, so the steps
+      # above never build it, and this one never builds libfuzzer-sys.
+      - name: Fuzz harness smoke tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path fuzz/Cargo.toml -- --check
+          cargo clippy --manifest-path fuzz/Cargo.toml --locked --all-targets -- -D warnings
+          cargo test --manifest-path fuzz/Cargo.toml --locked
 
   deny:
     name: cargo-deny

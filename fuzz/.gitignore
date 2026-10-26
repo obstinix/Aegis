@@ -1,0 +1,6 @@
+# cargo-fuzz output and local build files (docs/fuzzing.md). Saved
+# crash inputs belong in regressions/, which is tracked.
+/target/
+/corpus/
+/artifacts/
+/coverage/
