@@ -29,6 +29,8 @@ written to understand, and then own, the boundary between hardware and execution
 | ---------------------------- | --------------- |
 | Architecture & design docs   | 🟡 In progress  |
 | Build system / toolchain     | ⚪ Not started  |
+| `aegis doctor` capability report | ⚪ Not started  |
+| Hosted KVM backend (stage 1) | ⚪ Not started  |
 | VMX / SVM capability checks  | ⚪ Not started  |
 | VMX operation (VMXON)        | ⚪ Not started  |
 | First guest (VMLAUNCH)       | ⚪ Not started  |
@@ -43,8 +45,14 @@ Aegis is the virtualization component of **PyxisOS Track B**, the from-scratch k
 It sits next to **Lunar Core** (the Rust kernel) and is responsible for one thing: running guest code
 under hardware-enforced isolation, with every VM entry, VM exit, and memory mapping under explicit control.
 
-It is not a wrapper around KVM, Xen, or Hyper-V. The point is to build each mechanism directly against
-the processor manuals, so every layer is understood rather than inherited.
+Aegis is built in two stages ([ADR-0001](research/architecture-decision-record.md#adr-0001-staged-architecture)):
+
+1. **Hosted:** a Linux KVM backend, built on the rust-vmm crates, so Aegis can run, test and manage real VMs early.
+2. **Bare metal:** a from-scratch VMX core, written directly against the processor manuals so every layer is
+   understood rather than inherited. It runs as a UEFI application and is developed alongside the hosted stage.
+
+Both stages sit behind the same vCPU, guest-memory and exit-dispatch interfaces. The bare-metal core is
+not a wrapper around KVM, Xen, or Hyper-V.
 
 ## Architecture
 
@@ -111,21 +119,25 @@ Everything else (memory isolation, interrupts, devices) is built by deciding *wh
 - **Small trusted core.** Keep the code that runs in VMX root mode minimal and auditable.
 - **Honest status.** Docs describe what the code does, not what it will do.
 
-## Open design decisions
+## Design decisions
 
-These are unresolved and will be recorded as ADRs under `docs/architecture/` once decided.
+Recorded in [`research/architecture-decision-record.md`](research/architecture-decision-record.md). Research behind them is in [`research/`](research/).
 
-| Decision                    | Options                                                          |
+| Decision                    | Outcome                                                          |
 | --------------------------- | ---------------------------------------------------------------- |
-| Hosting model               | Built into Lunar Core (kernel-hosted, KVM-style) vs. standalone bare-metal |
-| First vendor target         | Intel VT-x first vs. AMD SVM first                                |
-| Language split              | Rust `no_std` for logic, NASM for entry/exit stubs: exact boundary TBD |
-| Guest memory strategy       | Identity-mapped EPT first vs. allocate-on-demand from the start  |
-| First guest                 | Hand-written real-mode/long-mode stub vs. minimal existing kernel |
+| Hosting model               | Staged: hosted KVM first, standalone bare-metal UEFI core in parallel (ADR-0001) |
+| First vendor target         | Intel VT-x first; AMD SVM after (ADR-0005)                        |
+| Language split              | Rust stable everywhere, with inline `asm!` for VMX; NASM only for test guests (ADR-0002) |
+| Guest memory strategy       | Explicit guest memory map; EPT built only from it, never identity-mapping host RAM (ADR-0006) |
+| First guest                 | Hand-written real-mode stub, then a Linux bzImage (ADR-0008, roadmap M2/M3) |
+| License                     | Apache-2.0 (ADR-0011, *proposed*: `LICENSE` file not yet added)  |
 
 ## Roadmap
 
 Each phase has a concrete exit criterion. A box is ticked only when that criterion is demonstrated and the test is in the repo.
+
+The detailed milestone plan, including the hosted KVM track that comes first, is in
+[`research/development-roadmap.md`](research/development-roadmap.md). The phases below describe the bare-metal track.
 
 - [ ] **Phase 0 · Foundations**
   Repo layout, toolchain, CI, serial logging.
@@ -164,28 +176,33 @@ AMD SVM support follows the same phases once the arch layer is stable on the fir
 
 | Tool                     | Purpose                                                            |
 | ------------------------ | ------------------------------------------------------------------ |
-| Rust (nightly, `no_std`) | Hypervisor logic                                                   |
-| NASM                     | Entry points, VM-exit stubs, low-level glue                        |
+| Rust (stable, pinned)    | All Aegis code; `no_std` for the core and the bare-metal track     |
+| NASM                     | Tiny test-guest images                                             |
 | QEMU + KVM               | Fast testing; needs nested virtualization and `-cpu host` to expose VMX to the guest |
 | Bochs (VMX-enabled build)| Slow but fully inspectable VMX emulation for debugging VMCS state  |
 | GDB                      | Attach via QEMU `-s -S`                                            |
 
 **WSL2 note:** testing a hypervisor inside QEMU requires nested virtualization to be enabled for the
-WSL2 VM, and `/dev/kvm` to be available inside WSL. Without it, fall back to Bochs.
+WSL2 VM, and `/dev/kvm` to be available inside WSL. Your WSL user must also be in the `kvm` group:
+`/dev/kvm` is `root:kvm 660`. Without it, fall back to Bochs.
 
 ### Planned layout
 
+From [ADR-0003](research/architecture-decision-record.md#adr-0003-workspace-layout-and-crate-boundaries):
+
 ```text
 Aegis/
-├── arch/
-│   ├── vmx/          # Intel VT-x: VMXON, VMCS, exit handling
-│   └── svm/          # AMD SVM: VMRUN, VMCB
-├── core/             # vCPU, VM lifecycle, exit dispatch
-├── mm/               # EPT / NPT, page ownership
-├── guests/           # minimal test guests
-├── tests/
+├── crates/
+│   ├── aegis-core/     # no_std: VM config, lifecycle, exit model, guest memory map
+│   ├── aegis-probe/    # capability detection (CPUID, /dev/kvm, nested params)
+│   ├── aegis-kvm/      # hosted backend (Linux KVM, rust-vmm)
+│   ├── aegis-uefi/     # bare-metal VMX core (UEFI application)
+│   ├── aegis-devices/  # backend-neutral device models (16550 UART first)
+│   └── aegis-cli/      # `aegis` binary: doctor, run, version
+├── xtask/              # build and QEMU test orchestration
+├── tests/guests/       # NASM test-guest sources
+├── research/           # research reports and ADRs
 └── docs/
-    └── architecture/ # ADRs and design notes
 ```
 
 ## Contributing
