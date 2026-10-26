@@ -13,6 +13,9 @@ dependencies = [
 [[package]]
 name = "aegis-core"
 version = "0.0.0"
+dependencies = [
+ "aegis-core",
+]
 
 [[package]]
 name = "aegis-probe"

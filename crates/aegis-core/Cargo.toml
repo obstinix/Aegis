@@ -1,12 +1,21 @@
 [package]
 name = "aegis-core"
-description = "Backend-neutral Aegis core: VM lifecycle, guest memory map, VM-exit model. no_std + alloc."
+description = "Backend-neutral Aegis core: VM lifecycle, guest memory map, VM-exit model, backend interface. no_std + alloc."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
+
+[features]
+# Scripted mock vCPU for tests in this and other crates.
+mock = []
+
+[dev-dependencies]
+# So integration tests always build with the mock backend, instead of being
+# skipped when `--features mock` is forgotten.
+aegis-core = { path = ".", features = ["mock"] }
 
 [lints]
 workspace = true

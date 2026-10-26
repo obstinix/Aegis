@@ -9,16 +9,25 @@
 //! The crate is `no_std` + `alloc` so the bare-metal UEFI core can use it, and
 //! it contains no `unsafe` code.
 //!
-//! Status: implemented and unit-tested on the host. No backend uses it yet.
+//! It also defines the backend interface ([`Vcpu`], [`PortIo`]), the port
+//! bus, and the dispatch loop [`run_vcpu`] (M2). Feature `mock` adds a
+//! scripted backend for tests.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
 extern crate alloc;
 
+pub mod backend;
+pub mod bus;
 pub mod exit;
 pub mod lifecycle;
 pub mod memory;
+#[cfg(any(test, feature = "mock"))]
+pub mod mock;
+
+pub use backend::{NotRunning, PortIo, RunLimits, RunOutcome, StopReason, Vcpu, run_vcpu};
+pub use bus::{BusError, PortBus, PortDevice, UnassignedLog};
 
 pub use exit::{AccessSize, InvalidAccessSize, IoAccess, MmioAccess, VmExit};
 pub use lifecycle::{LifecycleError, VmEvent, VmLifecycle, VmState};
