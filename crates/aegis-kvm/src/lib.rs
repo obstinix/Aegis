@@ -32,13 +32,18 @@
 use std::fmt;
 use std::marker::PhantomData;
 
+pub mod acpi;
 pub mod boot;
 pub mod seccomp;
+pub mod smp;
 
-use aegis_core::{AccessSize, GuestMemoryMap, IoAccess, MmioAccess, PortIo, Vcpu, VmExit};
+use aegis_core::{
+    AccessSize, GuestAccessError, GuestIo, GuestMemoryAccess, GuestMemoryMap, InterruptLine,
+    IoAccess, MmioAccess, Vcpu, VmExit,
+};
 use kvm_bindings::{
-    KVM_MAX_CPUID_ENTRIES, KVM_MEM_READONLY, KVM_PIT_SPEAKER_DUMMY, kvm_pit_config, kvm_regs,
-    kvm_segment, kvm_userspace_memory_region,
+    KVM_MAX_CPUID_ENTRIES, KVM_MEM_READONLY, KVM_PIT_SPEAKER_DUMMY, kvm_cpuid_entry2,
+    kvm_pit_config, kvm_regs, kvm_segment, kvm_userspace_memory_region,
 };
 
 use crate::boot::{BootError, BzImage};
@@ -272,6 +277,7 @@ impl KvmVm {
         kernel: &[u8],
         initrd: Option<&[u8]>,
         cmdline: &str,
+        acpi_rsdp: Option<u64>,
     ) -> Result<LinuxEntry, KvmError> {
         let ram = self.map.total_bytes();
         if self.map.regions().len() != 1 || self.map.region_for(0, ram).is_none() {
@@ -299,7 +305,7 @@ impl KvmVm {
             }
             None => None,
         };
-        let zero_page = bz.zero_page(ram, len(cmdline.len())?, initrd_at)?;
+        let zero_page = bz.zero_page(ram, len(cmdline.len())?, initrd_at, acpi_rsdp)?;
 
         self.write_guest(boot::KERNEL_ADDR, bz.protected_mode_kernel())?;
         if let (Some(data), Some((addr, _))) = (initrd, initrd_at) {
@@ -318,6 +324,35 @@ impl KvmVm {
             rip: bz.entry_64(),
             initrd: initrd_at,
         })
+    }
+
+    /// Write ACPI tables built by [`acpi::build`] into guest memory and
+    /// return the RSDP address, for [`KvmVm::load_linux`].
+    ///
+    /// # Errors
+    ///
+    /// [`KvmError::OutOfBounds`] if a table is outside guest memory;
+    /// [`KvmError::Unsupported`] if there is no RSDP.
+    pub fn load_acpi(&self, tables: &[acpi::PlacedTable]) -> Result<u64, KvmError> {
+        for table in tables {
+            self.write_guest(table.addr, &table.bytes)?;
+        }
+        tables
+            .iter()
+            .find(|t| &t.signature == b"RSDP")
+            .map(|t| t.addr)
+            .ok_or(KvmError::Unsupported("ACPI tables without an RSDP"))
+    }
+
+    /// An interrupt line driving I/O APIC input `gsi` through `KVM_IRQ_LINE`.
+    /// Needs [`KvmVm::enable_legacy_interrupts`].
+    #[must_use]
+    pub fn irq_line(&self, gsi: u32) -> KvmIrqLine<'_> {
+        KvmIrqLine {
+            vm: &self.vm,
+            gsi,
+            failures: std::sync::atomic::AtomicU64::new(0),
+        }
     }
 
     /// Copy `bytes` into guest memory at `gpa` (host-side load, e.g. a guest
@@ -365,6 +400,7 @@ impl KvmVm {
             .map_err(kvm_err("KVM_CREATE_VCPU"))?;
         Ok(KvmVcpu {
             fd,
+            id,
             last_unhandled: None,
             _vm: PhantomData,
         })
@@ -374,6 +410,8 @@ impl KvmVm {
 /// One KVM vCPU of a [`KvmVm`].
 pub struct KvmVcpu<'vm> {
     fd: VcpuFd,
+    /// vCPU index, which is also its local APIC ID.
+    id: u64,
     last_unhandled: Option<String>,
     _vm: PhantomData<&'vm KvmVm>,
 }
@@ -381,6 +419,7 @@ pub struct KvmVcpu<'vm> {
 impl fmt::Debug for KvmVcpu<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("KvmVcpu")
+            .field("id", &self.id)
             .field("last_unhandled", &self.last_unhandled)
             .finish_non_exhaustive()
     }
@@ -417,8 +456,46 @@ impl KvmVcpu<'_> {
         self.last_unhandled.as_deref()
     }
 
+    /// CPUID from `KVM_GET_SUPPORTED_CPUID`, with this vCPU's APIC ID patched
+    /// in (see [`apply_apic_id`]); then LAPIC LINT0 as `ExtINT` and LINT1 as
+    /// NMI.
+    fn set_cpuid_and_lint(&mut self, vm: &KvmVm) -> Result<(), KvmError> {
+        let mut cpuid = vm
+            .kvm
+            .get_supported_cpuid(KVM_MAX_CPUID_ENTRIES)
+            .map_err(kvm_err("KVM_GET_SUPPORTED_CPUID"))?;
+        let apic_id =
+            u32::try_from(self.id).map_err(|_| KvmError::Unsupported("vCPU index above 2^32"))?;
+        apply_apic_id(cpuid.as_mut_slice(), apic_id);
+        self.fd
+            .set_cpuid2(&cpuid)
+            .map_err(kvm_err("KVM_SET_CPUID2"))?;
+        let mut lapic = self.fd.get_lapic().map_err(kvm_err("KVM_GET_LAPIC"))?;
+        set_lvt_mode(&mut lapic.regs, APIC_LVT_LINT0, APIC_MODE_EXTINT);
+        set_lvt_mode(&mut lapic.regs, APIC_LVT_LINT1, APIC_MODE_NMI);
+        self.fd.set_lapic(&lapic).map_err(kvm_err("KVM_SET_LAPIC"))
+    }
+
+    /// Prepare an application processor (any vCPU but 0) for an SMP Linux
+    /// guest: CPUID with its APIC ID, and LAPIC LINT0/LINT1. With KVM's
+    /// in-kernel LAPIC the vCPU then waits for the guest's INIT/SIPI, which
+    /// KVM handles; no registers are set here.
+    ///
+    /// # Errors
+    ///
+    /// [`KvmError::Kvm`] if an ioctl fails (e.g. no in-kernel LAPIC).
+    pub fn set_ap_state(&mut self, vm: &KvmVm) -> Result<(), KvmError> {
+        self.set_cpuid_and_lint(vm)
+    }
+
+    /// The vCPU index (and local APIC ID).
+    #[must_use]
+    pub const fn id(&self) -> u64 {
+        self.id
+    }
+
     /// Prepare this vCPU to enter a kernel loaded by [`KvmVm::load_linux`]:
-    /// - CPUID from `KVM_GET_SUPPORTED_CPUID`;
+    /// - CPUID from `KVM_GET_SUPPORTED_CPUID`, with this vCPU's APIC ID;
     /// - LAPIC LINT0 as `ExtINT` and LINT1 as NMI, so in-kernel PIC interrupts
     ///   reach the CPU;
     /// - long mode with the early identity map and the boot-protocol GDT;
@@ -429,20 +506,7 @@ impl KvmVcpu<'_> {
     /// [`KvmError::Kvm`] if an ioctl fails, including when
     /// [`KvmVm::enable_legacy_interrupts`] was not called (no in-kernel LAPIC).
     pub fn set_linux_entry(&mut self, vm: &KvmVm, entry: &LinuxEntry) -> Result<(), KvmError> {
-        let cpuid = vm
-            .kvm
-            .get_supported_cpuid(KVM_MAX_CPUID_ENTRIES)
-            .map_err(kvm_err("KVM_GET_SUPPORTED_CPUID"))?;
-        self.fd
-            .set_cpuid2(&cpuid)
-            .map_err(kvm_err("KVM_SET_CPUID2"))?;
-
-        let mut lapic = self.fd.get_lapic().map_err(kvm_err("KVM_GET_LAPIC"))?;
-        set_lvt_mode(&mut lapic.regs, APIC_LVT_LINT0, APIC_MODE_EXTINT);
-        set_lvt_mode(&mut lapic.regs, APIC_LVT_LINT1, APIC_MODE_NMI);
-        self.fd
-            .set_lapic(&lapic)
-            .map_err(kvm_err("KVM_SET_LAPIC"))?;
+        self.set_cpuid_and_lint(vm)?;
 
         let mut sregs = self.fd.get_sregs().map_err(kvm_err("KVM_GET_SREGS"))?;
         sregs.cs = flat_segment(boot::CODE_SELECTOR, SegmentKind::Code64);
@@ -533,6 +597,60 @@ fn set_lvt_mode(regs: &mut [std::ffi::c_char], range: std::ops::Range<usize>, mo
     }
 }
 
+/// Make CPUID report `apic_id` as this CPU's local APIC ID, as KVM's
+/// in-kernel LAPIC does (ID = vCPU index), instead of the host CPU's:
+/// - leaf 1 EBX\[31:24\] (initial APIC ID);
+/// - leaves 0xB and 0x1F EDX (x2APIC ID), on every subleaf.
+fn apply_apic_id(entries: &mut [kvm_cpuid_entry2], apic_id: u32) {
+    for e in entries {
+        match e.function {
+            0x1 => e.ebx = (e.ebx & 0x00FF_FFFF) | ((apic_id & 0xFF) << 24),
+            0xB | 0x1F => e.edx = apic_id,
+            _ => {}
+        }
+    }
+}
+
+/// Devices reach guest RAM through the VM's bounds-checked accessors.
+impl GuestMemoryAccess for KvmVm {
+    fn read(&self, gpa: u64, buf: &mut [u8]) -> Result<(), GuestAccessError> {
+        let len = u64::try_from(buf.len()).unwrap_or(u64::MAX);
+        self.read_guest(gpa, buf)
+            .map_err(|_| GuestAccessError { gpa, len })
+    }
+
+    fn write(&self, gpa: u64, data: &[u8]) -> Result<(), GuestAccessError> {
+        let len = u64::try_from(data.len()).unwrap_or(u64::MAX);
+        self.write_guest(gpa, data)
+            .map_err(|_| GuestAccessError { gpa, len })
+    }
+}
+
+/// An I/O APIC input driven with `KVM_IRQ_LINE`, from [`KvmVm::irq_line`].
+#[derive(Debug)]
+pub struct KvmIrqLine<'vm> {
+    vm: &'vm VmFd,
+    gsi: u32,
+    failures: std::sync::atomic::AtomicU64,
+}
+
+impl KvmIrqLine<'_> {
+    /// How many `KVM_IRQ_LINE` calls failed (expected: 0).
+    #[must_use]
+    pub fn failures(&self) -> u64 {
+        self.failures.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl InterruptLine for KvmIrqLine<'_> {
+    fn set_level(&self, asserted: bool) {
+        if self.vm.set_irq_line(self.gsi, asserted).is_err() {
+            self.failures
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
 fn port_size(data: &[u8]) -> Option<AccessSize> {
     match data.len() {
         1 => Some(AccessSize::Byte),
@@ -560,11 +678,21 @@ fn le_value(data: &[u8]) -> u64 {
 impl Vcpu for KvmVcpu<'_> {
     type Error = KvmError;
 
-    fn run(&mut self, io: &mut dyn PortIo) -> Result<VmExit, KvmError> {
+    fn run(&mut self, io: &mut dyn GuestIo) -> Result<VmExit, KvmError> {
         let invalid = |_| KvmError::Unsupported("KVM reported an impossible access size");
+        // An application processor waits inside KVM_RUN for INIT and SIPI,
+        // and KVM_RUN returns EAGAIN after each one changes its state: run
+        // again. Each EAGAIN follows a guest event, so this cannot spin, and
+        // a pending kick signal makes KVM_RUN return EINTR instead.
+        let exit = loop {
+            match self.fd.run() {
+                Err(e) if e.errno() == libc::EAGAIN => {}
+                other => break other,
+            }
+        };
         // `Err(detail)` marks an exit Aegis cannot map; the raw reason is read
         // after the borrow of the run area ends.
-        let mapped: Result<VmExit, String> = match self.fd.run().map_err(kvm_err("KVM_RUN"))? {
+        let mapped: Result<VmExit, String> = match exit.map_err(kvm_err("KVM_RUN"))? {
             VcpuExit::IoOut(port, data) => match port_size(data) {
                 Some(size) => {
                     let value = u32::try_from(le_value(data)).unwrap_or(u32::MAX);
@@ -594,18 +722,30 @@ impl Vcpu for KvmVcpu<'_> {
             },
             VcpuExit::MmioRead(gpa, data) => match mmio_size(data) {
                 Some(size) => {
-                    // No MMIO devices: the run stops, but never hand back stale bytes.
-                    data.fill(0xFF);
-                    Ok(VmExit::Mmio(
-                        MmioAccess::new(gpa, size, None).map_err(invalid)?,
-                    ))
+                    let access = MmioAccess::new(gpa, size, None).map_err(invalid)?;
+                    if let Some(value) = io.mmio_read(gpa, size) {
+                        let bytes = value.to_le_bytes();
+                        let n = data.len();
+                        data.copy_from_slice(&bytes[..n]);
+                        Ok(VmExit::MmioDevice(access))
+                    } else {
+                        // No device: the run stops, but never hand back stale bytes.
+                        data.fill(0xFF);
+                        Ok(VmExit::Mmio(access))
+                    }
                 }
                 None => Err(format!("{}-byte MMIO read at {gpa:#x}", data.len())),
             },
             VcpuExit::MmioWrite(gpa, data) => match mmio_size(data) {
-                Some(size) => Ok(VmExit::Mmio(
-                    MmioAccess::new(gpa, size, Some(le_value(data))).map_err(invalid)?,
-                )),
+                Some(size) => {
+                    let value = le_value(data);
+                    let access = MmioAccess::new(gpa, size, Some(value)).map_err(invalid)?;
+                    if io.mmio_write(gpa, size, value) {
+                        Ok(VmExit::MmioDevice(access))
+                    } else {
+                        Ok(VmExit::Mmio(access))
+                    }
+                }
                 None => Err(format!("{}-byte MMIO write at {gpa:#x}", data.len())),
             },
             VcpuExit::Hlt => Ok(VmExit::Hlt),
@@ -650,6 +790,32 @@ mod tests {
             assert_eq!(port_size(&vec![0; len]), None, "{len}");
             assert_eq!(mmio_size(&vec![0; len]), None, "{len}");
         }
+    }
+
+    #[test]
+    fn apic_id_is_patched_into_cpuid() {
+        let entry = |function, index, ebx, edx| kvm_cpuid_entry2 {
+            function,
+            index,
+            ebx,
+            edx,
+            ..kvm_cpuid_entry2::default()
+        };
+        let mut entries = [
+            entry(0x0, 0, 0x756e_6547, 0),
+            entry(0x1, 0, 0x1320_0800, 0), // host APIC ID 0x13 in EBX[31:24]
+            entry(0xB, 0, 1, 0x13),
+            entry(0xB, 1, 2, 0x13),
+            entry(0x1F, 0, 1, 0x13),
+        ];
+        apply_apic_id(&mut entries, 3);
+        assert_eq!(entries[0].ebx, 0x756e_6547, "other leaves untouched");
+        assert_eq!(entries[1].ebx, 0x0320_0800, "only EBX[31:24] replaced");
+        assert!(
+            entries[2..].iter().all(|e| e.edx == 3),
+            "x2APIC ID on every subleaf"
+        );
+        assert_eq!(entries[3].ebx, 2);
     }
 
     #[test]

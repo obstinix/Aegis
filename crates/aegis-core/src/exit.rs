@@ -167,8 +167,10 @@ impl MmioAccess {
 pub enum VmExit {
     /// Port I/O.
     Io(IoAccess),
-    /// MMIO to an unbacked guest-physical address.
+    /// MMIO to a guest-physical address with neither RAM nor a device.
     Mmio(MmioAccess),
+    /// MMIO served by a device (e.g. a virtio-mmio transport).
+    MmioDevice(MmioAccess),
     /// The guest executed `HLT`.
     Hlt,
     /// The guest requested shutdown, or hit a triple fault.
@@ -192,7 +194,7 @@ impl VmExit {
     /// Whether the guest can be resumed after this exit once it has been handled.
     #[must_use]
     pub const fn is_resumable(&self) -> bool {
-        matches!(self, Self::Io(_) | Self::Mmio(_) | Self::Cpuid { .. })
+        matches!(self, Self::Io(_) | Self::MmioDevice(_) | Self::Cpuid { .. })
     }
 }
 
@@ -261,5 +263,14 @@ mod tests {
         assert!(!VmExit::Hlt.is_resumable());
         assert!(!VmExit::Shutdown.is_resumable());
         assert!(!VmExit::Unhandled { raw_reason: 0xFFFF }.is_resumable());
+        let mmio = MmioAccess::new(0xD000_0000, AccessSize::Dword, None).unwrap();
+        assert!(
+            VmExit::MmioDevice(mmio).is_resumable(),
+            "served by a device"
+        );
+        assert!(
+            !VmExit::Mmio(mmio).is_resumable(),
+            "no device: the VM stops"
+        );
     }
 }

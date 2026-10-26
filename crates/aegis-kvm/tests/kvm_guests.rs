@@ -18,7 +18,7 @@ use std::process::Command;
 use std::sync::{Mutex, MutexGuard};
 
 use aegis_core::{
-    AccessSize, GuestMemoryMap, IoAccess, MemoryRegion, MmioAccess, Permissions, PortBus,
+    AccessSize, DeviceBus, GuestMemoryMap, IoAccess, MemoryRegion, MmioAccess, Permissions,
     RunLimits, RunOutcome, StopReason, VmEvent, VmExit, VmLifecycle, VmState, run_vcpu,
 };
 use aegis_devices::Serial16550;
@@ -99,8 +99,9 @@ fn run_guest(map: GuestMemoryMap, guest: &[u8]) -> Run {
 
     let mut uart = Serial16550::default();
     let (outcome, unassigned) = {
-        let mut bus = PortBus::new();
-        bus.attach(COM1, Serial16550::PORTS, &mut uart).unwrap();
+        let mut bus = DeviceBus::new();
+        bus.attach_port(COM1, Serial16550::PORTS, &mut uart)
+            .unwrap();
         let outcome = run_vcpu(&mut vcpu, &mut bus, &mut lifecycle, RunLimits::default()).unwrap();
         (outcome, bus.unassigned().clone())
     };

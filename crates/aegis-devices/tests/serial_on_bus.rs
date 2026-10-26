@@ -3,7 +3,7 @@
 
 use aegis_core::mock::{ScriptedVcpu, Step};
 use aegis_core::{
-    AccessSize, PortBus, RunLimits, StopReason, VmEvent, VmExit, VmLifecycle, run_vcpu,
+    AccessSize, DeviceBus, RunLimits, StopReason, VmEvent, VmExit, VmLifecycle, run_vcpu,
 };
 use aegis_devices::Serial16550;
 
@@ -29,8 +29,9 @@ fn guest_polling_lsr_then_writing_thr_reaches_the_output() {
     vm.apply(VmEvent::Configure).unwrap();
     vm.apply(VmEvent::Start).unwrap();
     let outcome = {
-        let mut bus = PortBus::new();
-        bus.attach(0x3F8, Serial16550::PORTS, &mut uart).unwrap();
+        let mut bus = DeviceBus::new();
+        bus.attach_port(0x3F8, Serial16550::PORTS, &mut uart)
+            .unwrap();
         run_vcpu(&mut vcpu, &mut bus, &mut vm, RunLimits::default()).unwrap()
     };
 

@@ -256,11 +256,11 @@ fn seccomp_selftest_is_killed_by_sigsys() {
 #[test]
 fn run_reports_config_errors_with_status_2() {
     let config = tmp("bad.toml");
-    std::fs::write(&config, "memory_mib = 64\nkernel = \"k\"\nvcpus = 4\n").unwrap();
+    std::fs::write(&config, "memory_mib = 64\nkernel = \"k\"\nballoon = true\n").unwrap();
     let run = aegis(
         &["run", "--config", config.to_str().unwrap()],
         Duration::from_secs(30),
     );
     assert_eq!(run.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&run.stderr).contains("vcpus"));
+    assert!(String::from_utf8_lossy(&run.stderr).contains("balloon"));
 }

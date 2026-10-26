@@ -67,6 +67,10 @@ const OFF_CMDLINE_SIZE: usize = 0x238;
 const OFF_INIT_SIZE: usize = 0x260;
 // Zero-page-only fields (boot.rst, "THE ZERO PAGE").
 const OFF_E820_ENTRIES: usize = 0x1E8;
+/// `boot_params.acpi_rsdp_addr` (protocol 2.14+).
+const OFF_ACPI_RSDP: usize = 0x070;
+/// 2.14: first version with `acpi_rsdp_addr`.
+const ACPI_RSDP_VERSION: u16 = 0x020E;
 const OFF_E820_TABLE: usize = 0x2D0;
 const E820_ENTRY_SIZE: usize = 20;
 const E820_RAM: u32 = 1;
@@ -269,6 +273,7 @@ impl<'a> BzImage<'a> {
         ram_bytes: u64,
         cmdline_len: u64,
         initrd: Option<(u64, u64)>,
+        acpi_rsdp: Option<u64>,
     ) -> Result<[u8; ZERO_PAGE_SIZE], BootError> {
         if cmdline_len > self.cmdline_size {
             return Err(BootError::DoesNotFit(format!(
@@ -308,6 +313,14 @@ impl<'a> BzImage<'a> {
                 OFF_RAMDISK_SIZE,
                 &u32_field(len, "initramfs size")?.to_le_bytes(),
             );
+        }
+
+        // Kernels older than protocol 2.14 ignore this field and find the
+        // RSDP by scanning 0xE0000-0xFFFFF, where the tables are placed.
+        if let Some(rsdp) = acpi_rsdp
+            && self.version >= ACPI_RSDP_VERSION
+        {
+            put(&mut page, OFF_ACPI_RSDP, &rsdp.to_le_bytes());
         }
 
         // ram_bytes >= kernel_end() > KERNEL_ADDR, checked above.
@@ -463,7 +476,7 @@ mod tests {
         let bz = BzImage::parse(&img).unwrap();
         let ram = 256 << 20;
         let initrd = (bz.place_initrd(ram, 10_000).unwrap(), 10_000);
-        let zp = bz.zero_page(ram, 100, Some(initrd)).unwrap();
+        let zp = bz.zero_page(ram, 100, Some(initrd), None).unwrap();
 
         assert_eq!(
             &zp[OFF_HEADER..OFF_HEADER + 4],
@@ -500,6 +513,32 @@ mod tests {
     }
 
     #[test]
+    fn acpi_rsdp_is_written_only_for_protocol_2_14_and_later() {
+        let mut img = image(); // protocol 2.15
+        let bz = BzImage::parse(&img).unwrap();
+        let zp = bz.zero_page(256 << 20, 10, None, Some(0xE_0000)).unwrap();
+        assert_eq!(
+            u64::from_le_bytes(bytes(&zp, OFF_ACPI_RSDP).unwrap()),
+            0xE_0000
+        );
+        let zp = bz.zero_page(256 << 20, 10, None, None).unwrap();
+        assert_eq!(
+            u64::from_le_bytes(bytes(&zp, OFF_ACPI_RSDP).unwrap()),
+            0,
+            "absent when not given"
+        );
+
+        img[OFF_VERSION..OFF_VERSION + 2].copy_from_slice(&0x020D_u16.to_le_bytes()); // 2.13
+        let bz = BzImage::parse(&img).unwrap();
+        let zp = bz.zero_page(256 << 20, 10, None, Some(0xE_0000)).unwrap();
+        assert_eq!(
+            u64::from_le_bytes(bytes(&zp, OFF_ACPI_RSDP).unwrap()),
+            0,
+            "not a 2.13 field"
+        );
+    }
+
+    #[test]
     fn initrd_goes_high_page_aligned_and_never_over_the_kernel() {
         let img = image();
         let bz = BzImage::parse(&img).unwrap();
@@ -519,14 +558,14 @@ mod tests {
         let img = image();
         let bz = BzImage::parse(&img).unwrap();
         assert!(matches!(
-            bz.zero_page(256 << 20, 2048, None),
+            bz.zero_page(256 << 20, 2048, None, None),
             Err(BootError::DoesNotFit(_))
         ));
         assert!(matches!(
-            bz.zero_page(2 << 20, 10, None),
+            bz.zero_page(2 << 20, 10, None, None),
             Err(BootError::DoesNotFit(_))
         ));
-        assert!(bz.zero_page(256 << 20, 2047, None).is_ok());
+        assert!(bz.zero_page(256 << 20, 2047, None, None).is_ok());
     }
 
     #[test]

@@ -3,8 +3,8 @@
 
 use aegis_core::mock::{ScriptedVcpu, Step, io_exit};
 use aegis_core::{
-    AccessSize, MmioAccess, PortBus, PortDevice, RunLimits, StopReason, VmEvent, VmExit,
-    VmLifecycle, VmState, run_vcpu,
+    AccessSize, DeviceBus, MmioAccess, PortDevice, RunLimits, StopReason, VmEvent, VmExit,
+    VmLifecycle, VmState, run_vcpu, run_vcpu_until,
 };
 
 fn running() -> VmLifecycle {
@@ -48,8 +48,8 @@ fn halt_after_io_stops_normally_with_full_trace() {
     );
     let mut vm = running();
     let outcome = {
-        let mut bus = PortBus::new();
-        bus.attach(0x3F8, 8, &mut sink).unwrap();
+        let mut bus = DeviceBus::new();
+        bus.attach_port(0x3F8, 8, &mut sink).unwrap();
         run_vcpu(&mut vcpu, &mut bus, &mut vm, RunLimits::default()).unwrap()
     };
     assert_eq!(outcome.stop, StopReason::Halted);
@@ -73,7 +73,7 @@ fn shutdown_stops_normally() {
     let mut vm = running();
     let outcome = run_vcpu(
         &mut vcpu,
-        &mut PortBus::new(),
+        &mut DeviceBus::new(),
         &mut vm,
         RunLimits::default(),
     )
@@ -95,8 +95,8 @@ fn unassigned_port_access_is_logged_and_the_guest_continues() {
         Step::Exit(VmExit::Hlt),
     ]);
     let mut vm = running();
-    let mut bus = PortBus::new();
-    bus.attach(0x3F8, 8, &mut sink).unwrap();
+    let mut bus = DeviceBus::new();
+    bus.attach_port(0x3F8, 8, &mut sink).unwrap();
     let outcome = run_vcpu(&mut vcpu, &mut bus, &mut vm, RunLimits::default()).unwrap();
     assert_eq!(
         outcome.stop,
@@ -127,7 +127,7 @@ fn unknown_exit_fails_the_vm_with_the_raw_reason() {
     let mut vm = running();
     let outcome = run_vcpu(
         &mut vcpu,
-        &mut PortBus::new(),
+        &mut DeviceBus::new(),
         &mut vm,
         RunLimits::default(),
     )
@@ -147,7 +147,7 @@ fn mmio_without_a_device_fails_the_vm_with_the_access() {
     let mut vm = running();
     let outcome = run_vcpu(
         &mut vcpu,
-        &mut PortBus::new(),
+        &mut DeviceBus::new(),
         &mut vm,
         RunLimits::default(),
     )
@@ -162,7 +162,7 @@ fn backend_error_fails_the_vm_with_its_message() {
     let mut vm = running();
     let outcome = run_vcpu(
         &mut vcpu,
-        &mut PortBus::new(),
+        &mut DeviceBus::new(),
         &mut vm,
         RunLimits::default(),
     )
@@ -183,7 +183,7 @@ fn exit_limit_stops_an_exit_storm_and_bounds_the_trace() {
         max_exits: 100,
         trace_capacity: 10,
     };
-    let mut bus = PortBus::new();
+    let mut bus = DeviceBus::new();
     let outcome = run_vcpu(&mut vcpu, &mut bus, &mut vm, limits).unwrap();
     assert_eq!(outcome.stop, StopReason::ExitLimit);
     assert_eq!(outcome.exits, 100);
@@ -203,7 +203,7 @@ fn refuses_to_run_a_vm_that_is_not_running() {
         let mut vcpu = ScriptedVcpu::new([Step::Exit(VmExit::Hlt)]);
         let err = run_vcpu(
             &mut vcpu,
-            &mut PortBus::new(),
+            &mut DeviceBus::new(),
             &mut vm,
             RunLimits::default(),
         )
@@ -212,4 +212,113 @@ fn refuses_to_run_a_vm_that_is_not_running() {
         assert_eq!(vm.state(), before);
         assert_eq!(vcpu.remaining(), 1, "vCPU was not run");
     }
+}
+
+/// A device that serves MMIO reads as `0xA5` and records writes.
+#[derive(Default)]
+struct MmioRegs(Vec<(u64, u64)>);
+
+impl aegis_core::MmioDevice for MmioRegs {
+    fn read(&mut self, _offset: u64, _size: AccessSize) -> u64 {
+        0xA5
+    }
+    fn write(&mut self, offset: u64, _size: AccessSize, value: u64) {
+        self.0.push((offset, value));
+    }
+}
+
+#[test]
+fn mmio_served_by_a_device_resumes_and_unclaimed_mmio_stops() {
+    let mut regs = MmioRegs::default();
+    let mut vcpu = ScriptedVcpu::new([
+        Step::MmioWrite {
+            gpa: 0xD000_0070,
+            size: AccessSize::Dword,
+            value: 0x0F,
+        },
+        Step::MmioRead {
+            gpa: 0xD000_0000,
+            size: AccessSize::Dword,
+        },
+        Step::MmioWrite {
+            gpa: 0xE000_0000,
+            size: AccessSize::Byte,
+            value: 1,
+        },
+        Step::Exit(VmExit::Hlt),
+    ]);
+    let mut vm = running();
+    let outcome = {
+        let mut bus = DeviceBus::new();
+        bus.attach_mmio(0xD000_0000, 0x1000, &mut regs).unwrap();
+        run_vcpu(&mut vcpu, &mut bus, &mut vm, RunLimits::default()).unwrap()
+    };
+    let unclaimed = MmioAccess::new(0xE000_0000, AccessSize::Byte, Some(1)).unwrap();
+    assert_eq!(outcome.stop, StopReason::UnhandledMmio(unclaimed));
+    assert_eq!(outcome.exits, 3);
+    assert!(matches!(outcome.trace[0], VmExit::MmioDevice(_)));
+    assert!(matches!(outcome.trace[1], VmExit::MmioDevice(_)));
+    assert_eq!(regs.0, [(0x70, 0x0F)]);
+    assert_eq!(vcpu.mmio_reads, [0xA5]);
+    assert_eq!(vcpu.remaining(), 1, "HLT never reached");
+    assert_eq!(vm.state(), VmState::Failed);
+}
+
+#[test]
+fn stop_flag_set_before_entry_means_no_entry() {
+    use std::sync::atomic::AtomicBool;
+    let flag = AtomicBool::new(true);
+    let mut vcpu = ScriptedVcpu::new([Step::Exit(VmExit::Hlt)]);
+    let outcome = run_vcpu_until(
+        &mut vcpu,
+        &mut DeviceBus::new(),
+        RunLimits::default(),
+        &flag,
+    );
+    assert_eq!(outcome.stop, StopReason::Requested);
+    assert_eq!(outcome.exits, 0);
+    assert_eq!(vcpu.remaining(), 1);
+}
+
+/// A flag that is clear when the vCPU is about to enter the guest and set
+/// afterwards: another vCPU stopped the VM while this one was inside the
+/// backend.
+struct SetAfterEntry(std::cell::Cell<bool>);
+
+impl aegis_core::StopFlag for SetAfterEntry {
+    fn is_set(&self) -> bool {
+        self.0.replace(true)
+    }
+}
+
+#[test]
+fn host_interrupt_is_requested_only_when_the_flag_is_set() {
+    let mut kicked = ScriptedVcpu::new([Step::Interrupted]);
+    let flag = SetAfterEntry(std::cell::Cell::new(false));
+    let outcome = run_vcpu_until(
+        &mut kicked,
+        &mut DeviceBus::new(),
+        RunLimits::default(),
+        &flag,
+    );
+    assert_eq!(
+        outcome.stop,
+        StopReason::Requested,
+        "kicked out by another vCPU"
+    );
+    assert_eq!(outcome.exits, 0);
+
+    let mut unexpected = ScriptedVcpu::new([Step::Interrupted]);
+    let never = std::sync::atomic::AtomicBool::new(false);
+    let outcome = run_vcpu_until(
+        &mut unexpected,
+        &mut DeviceBus::new(),
+        RunLimits::default(),
+        &never,
+    );
+    assert_eq!(
+        outcome.stop,
+        StopReason::BackendError("mock vCPU interrupted by the host".to_owned()),
+        "an interrupt nobody asked for is a backend error"
+    );
 }

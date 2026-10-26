@@ -9,9 +9,14 @@
 //! The crate is `no_std` + `alloc` so the bare-metal UEFI core can use it, and
 //! it contains no `unsafe` code.
 //!
-//! It also defines the backend interface ([`Vcpu`], [`PortIo`]), the port
-//! bus, and the dispatch loop [`run_vcpu`] (M2). Feature `mock` adds a
-//! scripted backend for tests.
+//! It also defines:
+//! - the backend interface ([`Vcpu`], [`GuestIo`]);
+//! - the device bus for port I/O and MMIO ([`DeviceBus`]), with the traits
+//!   devices use to reach guest memory and interrupt lines;
+//! - the dispatch loops: [`run_vcpu`] for one vCPU (M2), and
+//!   [`run_vcpu_until`] plus [`vm_stop_event`] for SMP guests (M4h).
+//!
+//! Feature `mock` adds a scripted backend and an in-memory guest RAM for tests.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
@@ -26,8 +31,14 @@ pub mod memory;
 #[cfg(any(test, feature = "mock"))]
 pub mod mock;
 
-pub use backend::{NotRunning, PortIo, RunLimits, RunOutcome, StopReason, Vcpu, run_vcpu};
-pub use bus::{BusError, PortBus, PortDevice, UnassignedLog};
+pub use backend::{
+    GuestIo, MmioIo, NeverStop, NotRunning, PortIo, RunLimits, RunOutcome, StopFlag, StopReason,
+    Vcpu, run_vcpu, run_vcpu_until, vm_stop_event,
+};
+pub use bus::{
+    BusError, DeviceBus, GuestAccessError, GuestMemoryAccess, InterruptLine, MmioDevice,
+    PortDevice, UnassignedLog,
+};
 
 pub use exit::{AccessSize, InvalidAccessSize, IoAccess, MmioAccess, VmExit};
 pub use lifecycle::{LifecycleError, VmEvent, VmLifecycle, VmState};

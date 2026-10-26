@@ -105,6 +105,13 @@ fn run_command(path: &std::path::Path) -> ExitCode {
         "{}",
         vmrun::escape_for_terminal(&report.serial)
     );
+    if let Some(hvc) = &report.virtio_console {
+        let _ = write!(
+            std::io::stdout(),
+            "\n--- virtio-console (hvc0) ---\n{}",
+            vmrun::escape_for_terminal(hvc)
+        );
+    }
     let _ = writeln!(std::io::stderr(), "{}", report.summary);
     if report.normal {
         ExitCode::SUCCESS

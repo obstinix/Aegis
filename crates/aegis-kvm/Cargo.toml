@@ -12,11 +12,13 @@ publish.workspace = true
 aegis-core = { path = "../aegis-core" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+acpi_tables.workspace = true
 kvm-bindings.workspace = true
 kvm-ioctls.workspace = true
 libc.workspace = true
 seccompiler.workspace = true
 vm-memory.workspace = true
+vmm-sys-util.workspace = true
 
 [dev-dependencies]
 aegis-devices = { path = "../aegis-devices" }

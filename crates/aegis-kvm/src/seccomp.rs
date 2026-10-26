@@ -5,7 +5,12 @@
 //! loop and its orderly exit need. Everything else kills the whole process
 //! with `SIGSYS`:
 //!
-//! - `ioctl`, but only `KVM_RUN`: no other KVM, terminal or device control.
+//! - `ioctl`, but only `KVM_RUN` and `KVM_IRQ_LINE` (virtio interrupts): no
+//!   other KVM, terminal or device control.
+//! - `tgkill`, but only to this process (`tgid` = own PID) with `SIGRTMIN`:
+//!   the SMP runner kicking its own vCPU threads out of `KVM_RUN`.
+//! - `clock_nanosleep` and `nanosleep`, for the SMP coordinator's kick
+//!   interval.
 //! - Memory management (`brk`, `mmap`, `munmap`, `mremap`, `madvise`) for
 //!   heap growth and teardown.
 //! - `write` to stdout and stderr only, for printing results after the run.
@@ -17,9 +22,9 @@
 //!   which happens when the VM and vCPU fds close at teardown. Found with gdb
 //!   `catch syscall fcntl` after the filter killed a debug build at teardown.
 //!
-//! Not allowed: opening, reading or creating files; sockets; process
-//! creation; any KVM ioctl except `KVM_RUN`; and any other `fcntl` command
-//! (no `F_DUPFD`, `F_SETFL` or locks).
+//! Not allowed: opening, reading or creating files; sockets; process or
+//! thread creation; signalling other processes; any KVM ioctl except the two
+//! above; and any other `fcntl` command (no `F_DUPFD`, `F_SETFL` or locks).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -31,6 +36,8 @@ use seccompiler::{
 
 /// `KVM_RUN` = `_IO(KVMIO, 0x80)` with `KVMIO` = 0xAE.
 const KVM_RUN: u64 = 0xAE80;
+/// `KVM_IRQ_LINE` = `_IOW(KVMIO, 0x61, struct kvm_irq_level)` (8 bytes).
+const KVM_IRQ_LINE: u64 = 0x4008_AE61;
 
 /// The filter could not be built or installed.
 #[derive(Debug)]
@@ -63,7 +70,24 @@ fn arg_eq(index: u8, value: u64) -> Result<SeccompRule, SeccompError> {
 /// [`SeccompError`] if the filter cannot be compiled.
 pub fn run_loop_filter() -> Result<BpfProgram, SeccompError> {
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
-    rules.insert(libc::SYS_ioctl, vec![arg_eq(1, KVM_RUN)?]);
+    rules.insert(
+        libc::SYS_ioctl,
+        vec![arg_eq(1, KVM_RUN)?, arg_eq(1, KVM_IRQ_LINE)?],
+    );
+    let own_pid = u64::from(std::process::id());
+    let kick = u64::try_from(vmm_sys_util::signal::SIGRTMIN()).map_err(err)?;
+    rules.insert(
+        libc::SYS_tgkill,
+        vec![
+            SeccompRule::new(vec![
+                SeccompCondition::new(0, SeccompCmpArgLen::Dword, SeccompCmpOp::Eq, own_pid)
+                    .map_err(err)?,
+                SeccompCondition::new(2, SeccompCmpArgLen::Dword, SeccompCmpOp::Eq, kick)
+                    .map_err(err)?,
+            ])
+            .map_err(err)?,
+        ],
+    );
     rules.insert(libc::SYS_write, vec![arg_eq(0, 1)?, arg_eq(0, 2)?]);
     let f_getfd = u64::try_from(libc::F_GETFD).map_err(err)?;
     rules.insert(libc::SYS_fcntl, vec![arg_eq(1, f_getfd)?]);
@@ -81,6 +105,8 @@ pub fn run_loop_filter() -> Result<BpfProgram, SeccompError> {
         libc::SYS_rt_sigreturn,
         libc::SYS_rt_sigprocmask,
         libc::SYS_sigaltstack,
+        libc::SYS_clock_nanosleep,
+        libc::SYS_nanosleep,
     ] {
         // An empty rule list means "allow unconditionally".
         rules.insert(syscall, Vec::new());
