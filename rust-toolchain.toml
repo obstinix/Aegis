@@ -1,0 +1,6 @@
+# Pinned per ADR-0002. Bump deliberately, in its own commit, after rerunning all checks.
+[toolchain]
+channel = "1.97.0"
+components = ["clippy", "rustfmt"]
+targets = ["x86_64-unknown-uefi", "x86_64-unknown-none"]
+profile = "minimal"
