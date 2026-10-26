@@ -28,7 +28,7 @@ written to understand, and then own, the boundary between hardware and execution
 | Area                         | State           |
 | ---------------------------- | --------------- |
 | Architecture & design docs   | 🟡 In progress  |
-| Build system / toolchain     | 🟢 Done (M0): Rust 1.97.0 pinned; fmt, clippy, tests, docs, `no_std`/UEFI builds and `cargo deny check` pass on Windows and WSL2. CI (`.github/workflows/ci.yml`) runs them on Linux and Windows, together with the reproducible-build check (`cargo xtask repro-test`) and the fuzz harnesses' smoke tests; its first run on GitHub is still pending. Live KVM and nested tests stay local (ADR-0010). |
+| Build system / toolchain     | 🟢 Done (M0): Rust 1.97.0 pinned; fmt, clippy, tests, docs, `no_std`/UEFI builds and `cargo deny check` pass on Windows and WSL2. CI (`.github/workflows/ci.yml`) runs them on Linux and Windows, together with the reproducible-build check (`cargo xtask repro-test`) and the fuzz harnesses' smoke tests; its first run on GitHub passed on 2026-10-27 ([run 40412790382](https://github.com/obstinix/Aegis/actions/runs/40412790382)). Live KVM and nested tests stay local (ADR-0010). |
 | `aegis-core` (lifecycle, memory map, exit model, backend interface, port + MMIO device bus, dispatch loop with a stop flag) | 🟡 Implemented; 41 tests on Windows and Linux, driven by a scripted mock backend. Used by the KVM backend; the bare-metal backend does not exist yet. |
 | `aegis-devices` (16550 UART, transmit-only; virtio-mmio transport, split virtqueue, virtio-console output and input) | 🟡 Implemented, `no_std`; 38 tests (mock memory and interrupt line), and driven by real KVM guests and Linux boots. Console output goes to a pluggable sink: a capped buffer by default, `aegis run`'s stream in practice. Console input reaches the guest once it has written to `/dev/hvc0` (see the roadmap's M6h limits). The virtqueue and virtio-mmio paths have fuzz harnesses ([`docs/fuzzing.md`](docs/fuzzing.md)). |
 | `aegis doctor` capability report | 🟢 Done (M1): tested live and with fixtures on Windows and WSL2, including KVM API version and extension queries. |
@@ -142,15 +142,13 @@ Each phase has a concrete exit criterion. A box is ticked only when that criteri
 The detailed milestone plan, including the hosted KVM track that comes first, is in
 [`research/development-roadmap.md`](research/development-roadmap.md). The phases below describe the bare-metal track.
 
-- [ ] **Phase 0 · Foundations**
+- [x] **Phase 0 · Foundations**
   Repo layout, toolchain, CI, serial logging.
   *Done when:* a bootable image builds reproducibly and prints to serial under QEMU.
-  *Status:*
-  - The image boots and prints under QEMU, tested by `cargo xtask uefi-test` (roadmap B0, run locally).
+  *Status:* done 2026-10-27.
+  - The image boots and prints under QEMU, tested by `cargo xtask uefi-test` (roadmap B0). This test runs locally only, nested under KVM in WSL2, not in CI.
   - It builds reproducibly, tested by `cargo xtask repro-test`: two clean builds must be byte-identical. That holds per host; Windows and Linux builds differ from each other.
-  - CI (`.github/workflows/ci.yml`) runs the checks and `repro-test` on Linux and Windows, but it has not yet run on GitHub.
-
-  The box stays unticked until the first CI run on GitHub passes.
+  - CI (`.github/workflows/ci.yml`) runs the checks and `repro-test` on Linux and Windows. Its first run on GitHub passed ([run 40412790382](https://github.com/obstinix/Aegis/actions/runs/40412790382)).
 
 - [ ] **Phase 1 · Capability detection**
   Intel: `CPUID.1:ECX[5]` (VMX), `IA32_FEATURE_CONTROL` (MSR `0x3A`) lock/enable bits, `IA32_VMX_BASIC` (MSR `0x480`).

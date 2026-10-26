@@ -252,7 +252,7 @@ A missing prerequisite (not Linux, `/dev/kvm`, QEMU, OVMF) prints `SKIPPED: <rea
   - On `ubuntu-24.04` and `windows-2025` it runs fmt, clippy (`--all-features -D warnings`), `cargo test --workspace --all-features`, docs (`-D warnings`), the `no_std` and UEFI builds, `cargo xtask repro-test`, and the fuzz harnesses' smoke tests.
   - A separate job runs `cargo deny check`.
   - **Still local-only:** the live KVM tests (`#[ignore]`d, so CI skips them and reports them as ignored) and `cargo xtask uefi-test`. No attempt was made to use `/dev/kvm` on GitHub runners.
-  - The workflow has not yet run on GitHub: it lands with the next push.
+  - Its first run on GitHub passed on 2026-10-27 (run 40412790382, for commit `abce930`). Ubuntu ran 167 tests with 9 live tests ignored; Windows ran 134. The fuzz smoke tests, `repro-test` and `cargo deny` passed on both.
 - **Fuzz** is the separate `fuzz/` workspace (docs/fuzzing.md), with three targets: virtqueue, virtio-mmio registers with the console, and the `vm.toml` parser.
   - The harnesses' deterministic smoke and regression tests run on stable in CI.
   - Coverage-guided runs are local. Contrary to the table above, they ran on **Windows** rather than Linux: WSL2 here has no nightly Rust or C++ compiler, while Windows had both. Exit dispatch is not fuzzed yet.

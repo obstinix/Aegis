@@ -308,3 +308,16 @@ Honest record of how work was done, including AI assistance. Commit metadata sta
   - `uefi-test` and `repro-test` passed, and fmt, clippy (0 findings), docs, the `no_std`/UEFI builds and `cargo deny` pass on both.
   - One local Windows run of the fuzz CI step failed with `LNK1104`, a linker file lock. The same environmental issue was seen earlier in this project. The full job passed on rerun after a clean build of the fuzz crate.
 - **Not done:** a GitHub CI run (no push yet); the ThinkPad run (M5h, owner); cargo-fuzz and Linux fuzzing (need approval); fuzzing exit dispatch; the `ucs2` decision (owner). No push yet; it awaits owner approval.
+
+## 2026-10-27: first CI run; README Phase 0 ticked
+
+- **Assistance:** Claude Code (model `claude-opus-5-5`), same session.
+- **Push.** On the owner's approval, the eight commits `21075a5..abce930` were pushed to `origin/main`, a fast-forward from `d1fb311`.
+  - Before pushing, it was checked that the tree was clean, every commit was authored by `obstinix` without trailers, and the diff held no token patterns.
+  - Afterwards, the remote `main` was `abce930`. GitHub accepted `.github/workflows/ci.yml`, so the token has the Workflows permission.
+- **First CI run.** [Run 40412790382](https://github.com/obstinix/Aegis/actions/runs/40412790382) was green on every job.
+  - `check (ubuntu-24.04)`: about 1 minute. 167 tests passed and the 9 live KVM tests were ignored, which together match the 176 run locally in WSL2.
+  - `check (windows-2025)`: about 2 minutes, 134 tests passed.
+  - Both `check` jobs: the fuzz smoke tests (15) and `repro-test` passed.
+  - `cargo-deny`: advisories, bans, licences and sources ok, with only the known duplicate `bitflags` and `syn` warnings.
+- **README Phase 0 ticked.** Its criterion, a bootable image that builds reproducibly and prints to serial under QEMU, is tested in the repository (`repro-test` and `uefi-test`), and CI now runs. `uefi-test` itself stays local (ADR-0010), and reproducibility holds per host, not across Windows and Linux. The README says both.
