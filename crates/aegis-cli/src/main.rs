@@ -6,10 +6,12 @@
 //! - `aegis doctor --raw`: the raw observations behind the report, as JSON,
 //!   for bug reports and test fixtures.
 //! - `aegis run --config <vm.toml>`: boot a Linux guest under KVM (Linux
-//!   hosts). Guest serial output goes to stdout with control characters
-//!   escaped, and a summary goes to stderr. Exits 0 if the guest stopped
-//!   normally, 1 if it failed. With `virtio_console_stdin = true` in
-//!   `vm.toml`, stdin is forwarded to the guest's `/dev/hvc0`.
+//!   hosts). Guest console output is streamed to stdout as it arrives, with
+//!   control characters escaped: the UART as it is, and virtio-console
+//!   (`hvc0`) lines prefixed `hvc0| `. A summary goes to stderr after the
+//!   run. Exits 0 if the guest stopped normally, 1 if it failed. With
+//!   `virtio_console_stdin = true` in `vm.toml`, stdin is forwarded to the
+//!   guest's `/dev/hvc0`.
 //! - `aegis selftest seccomp`: install the run-loop seccomp filter and
 //!   attempt a forbidden syscall; the process must be killed by `SIGSYS`.
 //! - `aegis version`.
@@ -18,6 +20,10 @@
 
 mod config;
 mod render;
+// Used by `aegis run`, which needs Linux, but built everywhere so its tests
+// run on every host.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod stream;
 mod vmrun;
 
 use std::io::Write as _;
@@ -100,19 +106,8 @@ fn run_command(path: &std::path::Path) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    // A closed stdout is not worth a second error; the summary still goes to stderr.
-    let _ = write!(
-        std::io::stdout(),
-        "{}",
-        vmrun::escape_for_terminal(&report.serial)
-    );
-    if let Some(hvc) = &report.virtio_console {
-        let _ = write!(
-            std::io::stdout(),
-            "\n--- virtio-console (hvc0) ---\n{}",
-            vmrun::escape_for_terminal(hvc)
-        );
-    }
+    // The guest's output was streamed to stdout during the run; the summary
+    // (which says if stdout failed) follows on stderr.
     let _ = writeln!(std::io::stderr(), "{}", report.summary);
     if report.normal {
         ExitCode::SUCCESS

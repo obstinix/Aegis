@@ -279,6 +279,35 @@ fn boots_linux_to_the_init_marker_under_seccomp() {
     eprintln!("booted to {MARKER} in {:?}", started.elapsed());
 }
 
+/// Split `aegis run`'s streamed stdout back into the two consoles. Lines
+/// tagged `hvc0| ` are hvc0's, as are lines tagged `hvc0+ `, which carry the
+/// rest of an hvc0 line cut short by serial output (the newline before them
+/// is the cut's, not the guest's). All other lines are the UART's.
+fn consoles(stdout: &str) -> (String, String) {
+    let (mut serial, mut hvc) = (String::new(), String::new());
+    for line in stdout.split_inclusive('\n') {
+        if let Some(rest) = line.strip_prefix("hvc0| ") {
+            hvc.push_str(rest);
+        } else if let Some(rest) = line.strip_prefix("hvc0+ ") {
+            if hvc.ends_with('\n') {
+                hvc.pop();
+            }
+            hvc.push_str(rest);
+        } else {
+            serial.push_str(line);
+        }
+    }
+    (serial, hvc)
+}
+
+#[test]
+fn streamed_stdout_splits_back_into_the_two_consoles() {
+    let stdout = "Linux version 6\nhvc0| AEGIS_\n[ 1.0] msg\nhvc0+ RX[x]\nhvc0| next\nok\n";
+    let (serial, hvc) = consoles(stdout);
+    assert_eq!(serial, "Linux version 6\n[ 1.0] msg\nok\n");
+    assert_eq!(hvc, "AEGIS_RX[x]\nnext\n");
+}
+
 /// The interrupt counts, one per CPU, of the `/proc/interrupts` row whose
 /// action is a virtio device, or `None` if there is no such row.
 fn virtio_interrupts(proc_interrupts: &str) -> Option<Vec<u64>> {
@@ -325,9 +354,7 @@ fn boots_two_vcpus_with_a_virtio_console() {
         String::from_utf8_lossy(&run.stdout),
         String::from_utf8_lossy(&run.stderr),
     );
-    let (console, hvc) = stdout
-        .split_once("\n--- virtio-console (hvc0) ---\n")
-        .unwrap_or((&stdout, ""));
+    let (console, hvc) = consoles(&stdout);
     let report = format!(
         "status {}\n--- stderr\n{stderr}\n--- hvc0\n{hvc}\n--- UART console (last 4000 bytes)\n{}",
         run.status,
@@ -368,7 +395,7 @@ fn boots_two_vcpus_with_a_virtio_console() {
         .unwrap_or_default();
     assert_eq!(header, ["CPU0", "CPU1"], "both CPUs online\n{report}");
     // The used-buffer interrupt (GSI 5, from the DSDT) reached the guest.
-    let counts = virtio_interrupts(hvc).unwrap_or_default();
+    let counts = virtio_interrupts(&hvc).unwrap_or_default();
     assert_eq!(counts.len(), 2, "virtio row in /proc/interrupts\n{report}");
     assert!(counts.iter().sum::<u64>() > 0, "{report}");
 
@@ -411,9 +438,7 @@ fn guest_reads_host_stdin_from_hvc0() {
         String::from_utf8_lossy(&run.stdout),
         String::from_utf8_lossy(&run.stderr),
     );
-    let (console, hvc) = stdout
-        .split_once("\n--- virtio-console (hvc0) ---\n")
-        .unwrap_or((&stdout, ""));
+    let (console, hvc) = consoles(&stdout);
     let report = format!(
         "status {}\n--- stderr\n{stderr}\n--- hvc0\n{hvc}\n--- UART console (last 3000 bytes)\n{}",
         run.status,
@@ -458,6 +483,130 @@ fn guest_reads_host_stdin_from_hvc0() {
         input.len(),
         started.elapsed()
     );
+}
+
+/// Wait up to `limit` for `wanted` among the lines arriving on `rx`.
+/// Returns whether it came, and the lines that came before it.
+fn wait_for_line(
+    rx: &std::sync::mpsc::Receiver<String>,
+    wanted: &str,
+    limit: Duration,
+) -> (bool, Vec<String>) {
+    let deadline = Instant::now() + limit;
+    let mut before = Vec::new();
+    loop {
+        match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(line) if line == wanted => return (true, before),
+            Ok(line) => before.push(line),
+            Err(_) => return (false, before),
+        }
+    }
+}
+
+/// Wait up to `limit` for `child` to exit, killing it if it does not.
+fn wait_or_kill(child: &mut std::process::Child, limit: Duration) -> std::process::ExitStatus {
+    let deadline = Instant::now() + limit;
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            return child.wait().unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+#[ignore = "requires /dev/kvm, nasm, ld and a bzImage with ACPI, SMP and virtio-mmio; run with --include-ignored"]
+fn output_streams_while_the_guest_runs_and_input_answers_its_prompt() {
+    use std::io::{BufRead as _, BufReader, Write as _};
+    use std::sync::mpsc;
+
+    let config = tmp("vm-stream.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "memory_mib = 256\nkernel = {:?}\ninitrd = {:?}\nvcpus = 2\nvirtio_console = true\nvirtio_console_stdin = true\n",
+            kernel().display().to_string(),
+            initramfs("init_console_input").display().to_string()
+        ),
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_aegis"))
+        .args(["run", "--config", config.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let (out, mut err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
+    let (tx, rx) = mpsc::channel::<String>();
+    let out_reader = std::thread::spawn(move || {
+        let mut lines = Vec::new();
+        for line in BufReader::new(out).lines().map_while(Result::ok) {
+            let _ = tx.send(line.clone());
+            lines.push(line);
+        }
+        lines
+    });
+    let err_reader = std::thread::spawn(move || {
+        let mut s = Vec::new();
+        let _ = err.read_to_end(&mut s);
+        String::from_utf8_lossy(&s).into_owned()
+    });
+
+    // The guest prints READY on hvc0, then waits up to 10 s for a line. The
+    // test answers only once it has *seen* READY on aegis's stdout while the
+    // guest is still running, which only works if output is streamed.
+    let (prompt_seen, seen) = wait_for_line(&rx, "hvc0| AEGIS_RX_READY", Duration::from_mins(1));
+    let running_at_prompt = child.try_wait().unwrap().is_none();
+    let input = b"typed after the prompt\nsecond\n";
+    if prompt_seen {
+        stdin.write_all(input).unwrap();
+        stdin.flush().unwrap();
+    }
+    let status = wait_or_kill(&mut child, Duration::from_mins(1));
+    drop(stdin);
+    let mut stdout = out_reader.join().unwrap().join("\n");
+    stdout.push('\n');
+    let stderr = err_reader.join().unwrap();
+    let (console, hvc) = consoles(&stdout);
+    let report = format!(
+        "status {status}\n--- stderr\n{stderr}\n--- hvc0\n{hvc}\n--- UART console (last 3000 bytes)\n{}",
+        &console[console.len().saturating_sub(3000)..]
+    );
+
+    assert!(
+        prompt_seen,
+        "READY never appeared on stdout during the run\n{report}"
+    );
+    assert!(
+        running_at_prompt,
+        "aegis had already exited when READY was read\n{report}"
+    );
+    assert!(
+        seen.iter().any(|l| l.contains("Linux version 6.")),
+        "the kernel banner streamed before the prompt\n{report}"
+    );
+    let first = hvc.find("AEGIS_RX[typed after the prompt\n]");
+    let second = hvc.find("AEGIS_RX[second\n]");
+    assert!(
+        matches!((first, second), (Some(a), Some(b)) if a < b),
+        "{report}"
+    );
+    assert!(!console.contains("AEGIS_INPUT_TIMEOUT"), "{report}");
+    assert!(
+        stderr.contains(&format!("{} bytes in, 0 pending", input.len())),
+        "{report}"
+    );
+    assert!(stderr.contains("output: "), "{report}");
+    assert!(!stderr.contains("dropped because"), "{report}");
+    assert!(!stderr.contains("not shown"), "{report}");
+    assert!(stderr.contains("guest stopped: Shutdown"), "{report}");
+    assert!(status.success(), "{report}");
 }
 
 #[test]
