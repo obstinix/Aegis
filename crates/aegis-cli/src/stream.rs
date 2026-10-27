@@ -497,6 +497,63 @@ mod tests {
         assert_eq!(stats.dropped, [0, 0]);
     }
 
+    /// A writer that reports everything written so far each time it is
+    /// flushed.
+    struct Flushes {
+        written: Vec<u8>,
+        tx: std::sync::mpsc::Sender<String>,
+    }
+
+    impl Write for Flushes {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.written.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            let _ = self
+                .tx
+                .send(String::from_utf8_lossy(&self.written).into_owned());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn output_is_written_and_flushed_while_the_stream_is_open() {
+        let stream = Arc::new(OutputStream::new(1024));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let writer = {
+            let stream = Arc::clone(&stream);
+            std::thread::spawn(move || {
+                stream.drain_into(&mut Flushes {
+                    written: Vec::new(),
+                    tx,
+                })
+            })
+        };
+        // Wait for a flush that shows exactly `want`. The stream is still
+        // open, so it can only come from the writer working during the run.
+        let flushed = |want: &str| loop {
+            match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+                Ok(got) if got == want => break,
+                Ok(_) => {}
+                Err(e) => panic!("no flush showing {want:?}: {e}"),
+            }
+        };
+
+        stream.sink(Serial).output(b"Linux version 6\n");
+        flushed("Linux version 6\n");
+        // A prompt has no newline, and still shows at once.
+        stream.sink(Hvc0).output(b"login: ");
+        flushed("Linux version 6\nhvc0| login: ");
+        stream.sink(Serial).output(b"later\n");
+        flushed("Linux version 6\nhvc0| login: \nlater\n");
+
+        stream.close();
+        let stats = writer.join().unwrap();
+        assert_eq!(stats.received, [22, 7]);
+        assert_eq!((stats.dropped, stats.unwritten), ([0, 0], 0));
+    }
+
     #[test]
     fn the_writer_returns_once_closed_even_with_nothing_queued() {
         let stream = Arc::new(OutputStream::new(16));

@@ -22,6 +22,7 @@ use std::io::Read as _;
 use std::os::unix::process::ExitStatusExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 const MARKER: &str = "AEGIS_M3_INIT_OK";
@@ -127,9 +128,28 @@ fn newc(entries: &[Entry<'_>]) -> Vec<u8> {
     out
 }
 
+/// The initramfs archives this test process has built, by `/init` name.
+static BUILT: Mutex<Vec<(String, PathBuf)>> = Mutex::new(Vec::new());
+
 /// An initramfs whose `/init` is `tests/guests/<init>.asm`, with the device
 /// nodes it uses (`/dev/hvc0` is the virtio-console's port 0) and `/proc`.
+///
+/// Tests run in parallel, and several boot the same guest. Each archive is
+/// built once, under a lock, so two builds never write the same `nasm` or
+/// `ld` output, and no test rewrites an archive another test's `aegis` is
+/// reading. Without this, a test failed under load when `ld` lost such a
+/// race.
 fn initramfs(init: &str) -> PathBuf {
+    let mut built = BUILT.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((_, path)) = built.iter().find(|(name, _)| name == init) {
+        return path.clone();
+    }
+    let path = build_initramfs(init);
+    built.push((init.to_owned(), path.clone()));
+    path
+}
+
+fn build_initramfs(init: &str) -> PathBuf {
     let exe = build_init(init);
     let archive = newc(&[
         Entry {
@@ -179,10 +199,19 @@ fn aegis(args: &[&str], limit: Duration) -> Output {
     aegis_with_stdin(args, limit, None)
 }
 
-/// Run `aegis` with `args`, killing it after `limit`. With `stdin`, those
-/// bytes are written to its stdin, which then stays open (no end of file)
-/// until `aegis` exits: it has to stop on its own.
-fn aegis_with_stdin(args: &[&str], limit: Duration, stdin: Option<&[u8]>) -> Output {
+/// What [`aegis_with_stdin`] writes to `aegis`'s stdin.
+#[derive(Clone, Copy)]
+enum Input<'a> {
+    /// These bytes; then stdin stays open (no end of file) until `aegis`
+    /// exits, so it has to stop on its own.
+    HeldOpen(&'a [u8]),
+    /// These bytes, then end of file at once.
+    ThenEof(&'a [u8]),
+}
+
+/// Run `aegis` with `args`, killing it after `limit`, with `stdin` written
+/// to its stdin (or the test's stdin inherited if `None`).
+fn aegis_with_stdin(args: &[&str], limit: Duration, stdin: Option<Input<'_>>) -> Output {
     use std::io::Write as _;
 
     let mut command = Command::new(env!("CARGO_BIN_EXE_aegis"));
@@ -194,12 +223,16 @@ fn aegis_with_stdin(args: &[&str], limit: Duration, stdin: Option<&[u8]>) -> Out
         command.stdin(Stdio::piped());
     }
     let mut child = command.spawn().unwrap();
-    // Held, not dropped, until the child has exited.
-    let _held_open = stdin.map(|bytes| {
+    // A held-open pipe is kept, not dropped, until the child has exited.
+    let _held_open = stdin.and_then(|input| {
+        let (bytes, hold) = match input {
+            Input::HeldOpen(bytes) => (bytes, true),
+            Input::ThenEof(bytes) => (bytes, false),
+        };
         let mut pipe = child.stdin.take().unwrap();
         pipe.write_all(bytes).unwrap();
         pipe.flush().unwrap();
-        pipe
+        hold.then_some(pipe)
     });
     let (mut out, mut err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
     let readers = (
@@ -432,7 +465,7 @@ fn guest_reads_host_stdin_from_hvc0() {
     let run = aegis_with_stdin(
         &["run", "--config", config.to_str().unwrap()],
         Duration::from_mins(2),
-        Some(input),
+        Some(Input::HeldOpen(input)),
     );
     let (stdout, stderr) = (
         String::from_utf8_lossy(&run.stdout),
@@ -606,6 +639,112 @@ fn output_streams_while_the_guest_runs_and_input_answers_its_prompt() {
     assert!(!stderr.contains("dropped because"), "{report}");
     assert!(!stderr.contains("not shown"), "{report}");
     assert!(stderr.contains("guest stopped: Shutdown"), "{report}");
+    assert!(status.success(), "{report}");
+}
+
+#[test]
+#[ignore = "requires /dev/kvm, nasm, ld and a bzImage with ACPI, SMP and virtio-mmio; run with --include-ignored"]
+fn input_that_ends_before_the_guest_reads_is_still_delivered() {
+    let config = tmp("vm-input-eof.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "memory_mib = 256\nkernel = {:?}\ninitrd = {:?}\nvcpus = 2\nvirtio_console = true\nvirtio_console_stdin = true\n",
+            kernel().display().to_string(),
+            initramfs("init_console_input").display().to_string()
+        ),
+    )
+    .unwrap();
+    let input = b"sent before boot\nthen end of file\n";
+
+    // Stdin ends right after the input, long before the guest opens hvc0:
+    // the bytes must wait in the device, not be lost at end of file.
+    let run = aegis_with_stdin(
+        &["run", "--config", config.to_str().unwrap()],
+        Duration::from_mins(2),
+        Some(Input::ThenEof(input)),
+    );
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    let (console, hvc) = consoles(&stdout);
+    let report = format!(
+        "status {}\n--- stderr\n{stderr}\n--- hvc0\n{hvc}\n--- UART console (last 3000 bytes)\n{}",
+        run.status,
+        &console[console.len().saturating_sub(3000)..]
+    );
+
+    let first = hvc.find("AEGIS_RX[sent before boot\n]");
+    let second = hvc.find("AEGIS_RX[then end of file\n]");
+    assert!(
+        matches!((first, second), (Some(a), Some(b)) if a < b),
+        "{report}"
+    );
+    assert!(!console.contains("AEGIS_INPUT_TIMEOUT"), "{report}");
+    assert!(
+        stderr.contains(&format!(
+            "stdin to hvc0: {} bytes forwarded, ended by end of file",
+            input.len()
+        )),
+        "the worker ended at end of file, with nothing undelivered\n{report}"
+    );
+    assert!(
+        stderr.contains(&format!("{} bytes in, 0 pending", input.len())),
+        "{report}"
+    );
+    assert!(stderr.contains("guest stopped: Shutdown"), "{report}");
+    assert!(run.status.success(), "{report}");
+}
+
+#[test]
+#[ignore = "requires /dev/kvm, nasm, ld and a bzImage; run with --include-ignored"]
+fn a_closed_stdout_does_not_disturb_the_guest() {
+    use std::io::{BufRead as _, BufReader};
+
+    let config = tmp("vm-closed-stdout.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "memory_mib = 256\nkernel = {:?}\ninitrd = {:?}\n",
+            kernel().display().to_string(),
+            initramfs("init_marker").display().to_string()
+        ),
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_aegis"))
+        .args(["run", "--config", config.to_str().unwrap()])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut err = child.stderr.take().unwrap();
+    let err_reader = std::thread::spawn(move || {
+        let mut s = Vec::new();
+        let _ = err.read_to_end(&mut s);
+        String::from_utf8_lossy(&s).into_owned()
+    });
+
+    // Read the first line, then close the pipe while the guest is still
+    // booting, as `aegis run … | head -1` would.
+    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    let mut first = String::new();
+    reader.read_line(&mut first).unwrap();
+    drop(reader);
+    let running_when_closed = child.try_wait().unwrap().is_none();
+    let status = wait_or_kill(&mut child, Duration::from_mins(3));
+    let stderr = err_reader.join().unwrap();
+    let report = format!("status {status}\nfirst line {first:?}\n--- stderr\n{stderr}");
+
+    assert!(!first.is_empty(), "{report}");
+    assert!(
+        running_when_closed,
+        "the pipe must close during the run\n{report}"
+    );
+    // The guest ran to its normal stop; the writer kept draining and
+    // counted what could not be shown.
+    assert!(stderr.contains("guest stopped: Shutdown"), "{report}");
+    assert!(stderr.contains("not shown: Broken pipe"), "{report}");
     assert!(status.success(), "{report}");
 }
 
