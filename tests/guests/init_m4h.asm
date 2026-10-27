@@ -5,8 +5,13 @@
 ; 2. mount("proc", "/proc", "proc").
 ; 3. open("/dev/hvc0", O_WRONLY | O_NOCTTY), the virtio-console's port 0, and
 ;    write HVC_MARKER to it. Each write goes through the transmit virtqueue.
-; 4. Copy /proc/interrupts to hvc0, then HVC_END. The host test reads the
-;    virtio interrupt count (one column per CPU) from what hvc0 carried.
+; 4. Wait 200 ms, then copy /proc/interrupts to hvc0, then HVC_END. The host
+;    test reads the virtio interrupt count (one column per CPU) from what hvc0
+;    carried. The wait is there because nothing orders the used-buffer
+;    interrupt for step 3's write before this read: it may be delivered on the
+;    other CPU, whose vCPU thread the host may not have scheduled yet. One run
+;    in 22 read a count of 0 without the wait. A lost interrupt still reads 0
+;    however long the wait.
 ; 5. Log DONE to /dev/kmsg, then reboot(LINUX_REBOOT_CMD_RESTART), which is a
 ;    triple fault with `reboot=t`, as in init_marker.asm.
 ;
@@ -22,6 +27,7 @@ default rel
 %define SYS_read    0
 %define SYS_write   1
 %define SYS_open    2
+%define SYS_nanosleep 35
 %define SYS_exit    60
 %define SYS_mount   165
 %define SYS_reboot  169
@@ -71,6 +77,11 @@ _start:
     mov r13, rax                ; hvc0 fd
     WRITE r13, hvc_marker
 
+    mov eax, SYS_nanosleep      ; see step 4 above
+    lea rdi, [settle]
+    xor esi, esi
+    syscall
+
     mov eax, SYS_open
     lea rdi, [interrupts_path]
     mov esi, O_RDONLY
@@ -112,6 +123,8 @@ _start:
     syscall
 
 section .rodata
+align 8
+settle:          dq 0, 200000000    ; struct timespec: 0 s, 200 ms
 kmsg_path:       db "/dev/kmsg", 0
 hvc_path:        db "/dev/hvc0", 0
 proc_name:       db "proc", 0
