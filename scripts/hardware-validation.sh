@@ -186,11 +186,16 @@ fi
 run_step m3-seccomp-selftest REQUIRED cargo test -p aegis-cli --test boot_linux -- --exact seccomp_selftest_is_killed_by_sigsys
 
 if [ "$extended" -eq 1 ]; then
-    for test in boots_two_vcpus_with_a_virtio_console guest_reads_host_stdin_from_hvc0 output_streams_while_the_guest_runs_and_input_answers_its_prompt; do
+    for test in boots_two_vcpus_with_a_virtio_console guest_reads_host_stdin_from_hvc0 \
+        input_that_ends_before_the_guest_reads_is_still_delivered \
+        output_streams_while_the_guest_runs_and_input_answers_its_prompt \
+        a_closed_stdout_does_not_disturb_the_guest; do
         case "$test" in
             boots_two_vcpus_with_a_virtio_console) name=m4h-smp-virtio ;;
             guest_reads_host_stdin_from_hvc0) name=m6h-console-input ;;
-            *) name=streamed-output ;;
+            input_that_ends_before_the_guest_reads_is_still_delivered) name=m6h-input-eof ;;
+            output_streams_while_the_guest_runs_and_input_answers_its_prompt) name=streamed-output ;;
+            *) name=streamed-output-closed-pipe ;;
         esac
         if [ "$kvm_ok" -eq 0 ] || [ "$kernel_ok" -eq 0 ] || ! have nasm || ! have ld; then
             record "$name" EXTENDED SKIP "needs /dev/kvm, nasm, ld and a bzImage"

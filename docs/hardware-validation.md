@@ -2,14 +2,15 @@
 
 M5h asks for the M3 tests to be rerun on the **ThinkPad X1 Carbon 5th Gen (i7-7600U, PyxisOS Track A)**, with the results recorded in [`research/compatibility-matrix.md`](../research/compatibility-matrix.md) as hardware-tested. This page is the checklist for doing that. [`scripts/hardware-validation.sh`](../scripts/hardware-validation.sh) runs the tests and collects the evidence.
 
-## Two machines, two kinds of evidence
+## Three places, three kinds of evidence
 
-| Machine | Role | What runs there | Status |
+| Where | What runs there | What a pass shows | Status |
 |---|---|---|---|
-| **ASUS ROG Strix** development workstation (Windows 11, Intel Core Ultra 9 275HX, WSL2) | Development; automated checks | CI on GitHub (Linux and Windows); the Windows suite; the WSL2 suite including live KVM tests; `cargo xtask uefi-test` nested under WSL2 | Run continually. Note that WSL2 is itself a VM under Hyper-V, so these are **not** physical-hardware results. |
-| **ThinkPad X1 Carbon 5th Gen** (i7-7600U, Kaby Lake, 16 GB; PyxisOS Track A: Linux 6.x, UEFI, systemd-boot) | Physical validation (M5h) | `scripts/hardware-validation.sh`, run by the owner on the machine itself | **Not yet run.** No result below has been produced on the ThinkPad. |
+| **GitHub Actions CI** (GitHub's own `ubuntu-24.04` and `windows-2025` runners) | fmt, clippy, unit and mock tests, docs, the `no_std`/UEFI builds, `repro-test`, the fuzz smoke tests, `cargo deny` | The code builds and its host-independent tests pass. **No live KVM test and no guest runs there** (ADR-0010). | Green since 2026-10-27. Says nothing about any hardware. |
+| **ASUS ROG Strix** development workstation (Windows 11, Intel Core Ultra 9 275HX, WSL2) | The Windows suite; the WSL2 suite including the live KVM tests; `cargo xtask uefi-test` nested under WSL2; this script, to check the script itself | Aegis works under KVM inside WSL2, which is itself a VM under Hyper-V. **Not a physical-hardware result.** | Run at every milestone. |
+| **ThinkPad X1 Carbon 5th Gen** (i7-7600U, Kaby Lake, 16 GB; PyxisOS Track A: Linux 6.x, UEFI, systemd-boot) | `scripts/hardware-validation.sh`, run by the owner on the machine itself | Aegis works on bare-metal KVM on the PyxisOS Track A hardware (M5h). | **Not yet run.** No result in this repository was produced on the ThinkPad. |
 
-The script was itself checked on the development machine, under WSL2 on 2026-10-26: all steps passed. That shows the script works. It is not a ThinkPad result, and `results.md` says so: on that run it reports the CPUID hypervisor flag as present.
+The script was checked on the ASUS machine, under WSL2, on 2026-10-26 (all steps passed) and again on 2026-10-27 with the two added steps. On 2026-10-27, the first run passed every REQUIRED step, but the EXTENDED `m4h-smp-virtio` step failed once on a test-timing issue; the roadmap's cross-cutting section records the details and the fix. After the fix, a rerun passed every step. That shows the script works, and that an EXTENDED failure is reported without failing the run. It is not a ThinkPad result, and `results.md` says so: on those runs it reports the CPUID hypervisor flag as present.
 
 ## Prerequisites on the ThinkPad
 
@@ -47,7 +48,9 @@ scripts/hardware-validation.sh --kernel ~/wsl-kernel
 | `m3-seccomp-selftest` | **required** | `seccomp_selftest_is_killed_by_sigsys` | A forbidden syscall kills the process with `SIGSYS`. | ~1 s |
 | `m4h-smp-virtio` | extended | two vCPUs plus the virtio-console | ACPI SMP brings up 2 CPUs; the hvc0 markers arrive; virtio interrupts are counted. | ~2 s |
 | `m6h-console-input` | extended | stdin to hvc0 | The guest reads both input lines. | ~3 s |
+| `m6h-input-eof` | extended | stdin ending before the guest reads | Input followed at once by end of file still reaches the guest; the worker reports `ended by end of file`. | ~3 s |
 | `streamed-output` | extended | streaming | The guest's prompt is seen while it runs, and the input that answers it comes back. | ~2 s |
+| `streamed-output-closed-pipe` | extended | stdout closed during the boot | The guest still stops normally, `aegis` exits 0, and the summary reports `not shown: Broken pipe`. | ~3 s |
 | `b0-uefi-test` | extended | `cargo xtask uefi-test` | The UEFI app prints its marker under OVMF and powers off. Exit 77 is recorded as SKIP (no QEMU or OVMF). | ~2 s |
 | `repro-test` | extended | `cargo xtask repro-test` | Two clean UEFI builds are byte-identical. | ~15 s |
 
