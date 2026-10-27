@@ -127,6 +127,41 @@ The three ran in parallel, from the seed corpus. Three minutes each is a smoke r
 - After the check was restored, the same file replayed cleanly (exit 0).
 - The stable smoke test `random_and_mutated_inputs_keep_the_virtqueue_invariants` also failed while the check was weakened.
 
+## What remains before adopting the standard cargo-fuzz workflow
+
+Checked again on 2026-10-27: Windows has nightly but no cargo-fuzz, and WSL2 has neither nightly, cargo-fuzz nor a C++ compiler. In order:
+
+1. **Owner approval, then `cargo install --locked cargo-fuzz`.** Pin the version used, as is done for cargo-deny.
+2. **Confirm `cargo +nightly fuzz run --features libfuzzer <target>` on Windows.** The manual build above needed `--target`, `/include:main` and `-Zsanitizer=address`. cargo-fuzz is expected to pass all three itself, but that has not been checked here. Check also that a crash still lands in `fuzz/artifacts/<target>/` through `fuzz_init()`.
+3. **Fuzzing on Linux,** where libFuzzer saves crashes without the Windows hook. With owner approval, in WSL2: `rustup toolchain install nightly` and `sudo apt install clang`. The ThinkPad would also do.
+4. **A campaign policy:**
+   - how long to run before a release (for example an hour per target);
+   - where corpora live (they stay out of git, so keep them as a release artifact or re-seed with `write_seed_corpus`);
+   - that every fixed crash goes into `fuzz/regressions/`.
+5. **Optional: a time-boxed fuzz job in CI**, for example 60 s per target on `ubuntu-24.04` with nightly. It needs `cargo-fuzz` installed in CI and the owner's choice of licence policy for `libfuzzer-sys` (licensing review §3.2). Today CI runs only the stable smoke tests.
+6. **More targets:**
+   - the `aegis-core` exit dispatch, with arbitrary `VmExit`s against the mock backend, as ADR-0010 lists;
+   - the bzImage loader in `aegis-kvm::boot`, which first needs its header parsing split from the KVM setup.
+
+## Further invariants worth asserting
+
+The harnesses check the invariants in the table at the top of this page. These are recommended additions, not yet implemented:
+
+- **virtqueue:**
+  - After each `push_used`, the used ring's `idx` has advanced by exactly one, the new entry names the chain's head, and nothing outside the used ring changed in guest memory. That needs a snapshot of guest RAM to compare.
+  - A queue never pops more chains than the driver published (`avail.idx` minus the last seen index).
+  - The same input always produces the same sequence of chains.
+- **virtio-mmio:**
+  - `QueueReady` reads back 1 only for a queue that `enable` accepted, and queue configuration writes are ignored while it is 1.
+  - `InterruptStatus` only ever holds `INT_VRING | INT_CONFIG`.
+  - After a reset, every queue reads back as not ready, and the console's port is closed.
+  - Configuration-space reads (offset `0x100` and up) are always 0, at any width.
+  - The device never writes guest memory outside the buffers the driver marked device-writable.
+- **`vm.toml`:**
+  - A config `load` accepts never exceeds the 64 KiB size cap.
+  - Unknown keys are always rejected.
+  - A config that serializes and parses back is unchanged (needs a serializer for `VmConfig`).
+
 ## When the fuzzer finds a crash
 
 1. Reproduce it on stable: `cargo run --manifest-path fuzz/Cargo.toml --example reproduce -- <target> fuzz/artifacts/<target>/crash-…`.

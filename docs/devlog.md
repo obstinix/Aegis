@@ -321,3 +321,33 @@ Honest record of how work was done, including AI assistance. Commit metadata sta
   - Both `check` jobs: the fuzz smoke tests (15) and `repro-test` passed.
   - `cargo-deny`: advisories, bans, licences and sources ok, with only the known duplicate `bitflags` and `syn` warnings.
 - **README Phase 0 ticked.** Its criterion, a bootable image that builds reproducibly and prints to serial under QEMU, is tested in the repository (`repro-test` and `uefi-test`), and CI now runs. `uefi-test` itself stays local (ADR-0010), and reproducibility holds per host, not across Windows and Linux. The README says both.
+
+## 2026-10-27: streaming regression tests, two test fixes, decision and fuzzing notes
+
+- **Assistance:** Claude Code (model `claude-opus-5-5`), same session. The owner's directive asked again for streamed output, CI quality, ThinkPad preparation, fuzzing preparation and a `ucs2` decision note.
+- **State verified first.**
+  - `main` was clean at `7f39457`, equal to `origin/main`.
+  - CI run 40417643345 had succeeded on that commit, checked through the GitHub API.
+  - The repository has no AGENTS.md or CLAUDE.md.
+- **Streaming was already implemented** (`fe34bf4`), contrary to the directive's premise that output appeared only after the guest finished. That was re-checked in the code, and the gaps were in testing. Added:
+  - a unit test, run in CI on both OSes, that output is flushed while the stream is open;
+  - a live test that closes stdout during the boot;
+  - a live test where stdin hits end of file before the guest reads.
+
+  Each new test was shown to catch a planted bug, and every planted change was reverted.
+- **Interactivity, stated precisely.** Output is streamed, and stdin reaches hvc0 after the guest's first write there. There is no terminal raw mode, no Ctrl-C passthrough, and no UART input. The roadmap's "Toward an interactive console" section lists the remaining work. In this repository M6h is the finished input milestone; an interactive console is not yet a milestone.
+- **Two test fixes, found while validating:**
+  - **M4h timing.** The live test once read a virtio interrupt count of 0. The guest now waits 200 ms before reading `/proc/interrupts`. The cause is likely, not proven, and the assertion is unchanged.
+  - **A real race in the boot tests.** Parallel tests built the same guest into the same files. `ld` failed under load in 1 run of 5. Each initramfs is now built once, under a lock, and 10/10 runs passed under the same load.
+- **ThinkPad preparation.**
+  - The checklist now separates GitHub's CI runners, the ASUS dev machine and the ThinkPad.
+  - The script runs the two new live tests.
+  - It was re-checked under WSL2: every step passed after the fixes, after one earlier run with the M4h failure.
+  - Nothing has run on the ThinkPad.
+- **Fuzzing.** Tools checked again: Windows has nightly but no cargo-fuzz, and WSL2 has neither, nor a C++ compiler. Nothing was installed. `docs/fuzzing.md` now lists what remains before adopting cargo-fuzz, and further invariants worth asserting.
+- **`ucs2`.** A short decision note, `research/ucs2-licensing-decision.md`, covers obligations, attribution, compatibility, alternatives and a recommendation. The decision is the owner's; nothing changed.
+- **Checks:**
+  - Windows: 135/135, and all 8 CI workflow steps run locally.
+  - WSL2: 179/179 including the live tests.
+  - The fuzz crate passes 15 tests. `uefi-test` and `repro-test` passed, and fmt, clippy (0 findings), docs, the `no_std`/UEFI builds and `cargo deny` pass.
+  - Two local Windows runs failed on the `LNK1104` linker file lock again and passed on rerun.

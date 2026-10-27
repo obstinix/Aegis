@@ -109,7 +109,7 @@ What was checked: the crate source as published on crates.io, fetched into a scr
    Then add `THIRD_PARTY_NOTICES.md` before the first binary is distributed, and record the decision as an ADR-0011 note.
 3. **Replace `ucs2` under `uefi`** with a `[patch]` reimplementation. Not recommended: it means maintaining a fork of the crate's API. Cleanly reimplementing a 353-line encoder is also more work than option 1.
 
-**Recommendation:** option 1 until the UEFI side needs protocols that would make hand-written wrappers costly; decide then between 1 and 2. This is an engineering assessment, not legal advice.
+**Recommendation:** option 1 until the UEFI side needs protocols that would make hand-written wrappers costly; decide then between 1 and 2. This is an engineering assessment, not legal advice. The obligations, compatibility and alternatives are summarized for the decision in [`ucs2-licensing-decision.md`](ucs2-licensing-decision.md).
 
 ### 3.2 Fuzz-only dependencies (2026-10-27)
 
