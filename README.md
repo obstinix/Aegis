@@ -2,258 +2,341 @@
 
 # 🛡️ AEGIS
 
-### The hypervisor layer of PyxisOS
+**The virtualization layer being built for [PyxisOS](https://github.com/obstinix/PyxisOS)**
 
-A from-scratch x86_64 hypervisor built on hardware-assisted virtualization (Intel VT-x / AMD-V),
-written to understand, and then own, the boundary between hardware and execution.
+A staged x86‑64 hypervisor research project.<br>
+Hosted Linux/KVM execution today. A from‑scratch, bare‑metal virtualization core is the longer‑term goal.
 
-![Status](https://img.shields.io/badge/status-pre--implementation-orange?style=flat-square)
-![Arch](https://img.shields.io/badge/arch-x86__64-555555?style=flat-square)
-![Lang](https://img.shields.io/badge/lang-Rust%20%2B%20NASM%20(planned)-b7410e?style=flat-square)
-![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square)
-[![PyxisOS](https://img.shields.io/badge/part%20of-PyxisOS-e63946?style=flat-square)](https://github.com/obstinix/PyxisOS)
+<br>
 
-[Status](#status) · [Architecture](#architecture) · [How it works](#how-hardware-virtualization-works) · [Roadmap](#roadmap) · [Dev setup](#development-environment) · [References](#references)
+[![Status](https://img.shields.io/badge/status-experimental-E8A33D?style=flat-square)](#current-status)
+[![Arch](https://img.shields.io/badge/arch-x86__64-555555?style=flat-square)](#architecture)
+[![Rust](https://img.shields.io/badge/Rust-pinned%20stable-B7410E?style=flat-square&logo=rust&logoColor=white)](rust-toolchain.toml)
+[![Hosted](https://img.shields.io/badge/hosted-Linux%20KVM-2E7D32?style=flat-square&logo=linux&logoColor=white)](#run-a-hosted-linux-guest)
+[![Bare metal](https://img.shields.io/badge/bare--metal-in%20progress-6E7781?style=flat-square)](#roadmap)
+[![License](https://img.shields.io/badge/license-Apache--2.0-1F6FEB?style=flat-square)](LICENSE)
+<!-- Replace ci.yml with the actual workflow filename under .github/workflows/ -->
+[![CI](https://github.com/obstinix/Aegis/actions/workflows/ci.yml/badge.svg)](https://github.com/obstinix/Aegis/actions)
+
+[Overview](#overview) · [Status](#current-status) · [Architecture](#architecture) · [Quick start](#quick-start) · [Development](#development-and-validation) · [Roadmap](#roadmap) · [Research](#research-and-design-records)
+
+<sub>Part of the PyxisOS ecosystem · maintained by <a href="https://github.com/obstinix">obstinix</a></sub>
 
 </div>
 
 ---
 
 > [!WARNING]
-> **Aegis is early, experimental code.** The hosted KVM backend boots Linux in tests under WSL2. It has not been tested on physical hardware or security-reviewed beyond this repository's own analysis, and the bare-metal core does no virtualization yet.
-> Anything marked *planned* is a goal, not a capability. Do not rely on Aegis to isolate anything.
+> **Aegis is experimental and is not a security boundary.**
+> The hosted backend can boot a Linux guest under KVM in the tested WSL2 environment. The UEFI application boots in a nested QEMU/KVM test but does **not** yet perform bare‑metal virtualization. Physical‑hardware validation and independent security review have not been done. Do not use Aegis to protect sensitive workloads or assume guest‑to‑host isolation.
 
-## Status
+## At a glance
 
-| Area                         | State           |
-| ---------------------------- | --------------- |
-| Architecture & design docs   | 🟡 In progress  |
-| Build system / toolchain     | 🟢 Done (M0): Rust 1.97.0 pinned; fmt, clippy, tests, docs, `no_std`/UEFI builds and `cargo deny check` pass on Windows and WSL2. CI (`.github/workflows/ci.yml`) runs them on Linux and Windows, together with the reproducible-build check (`cargo xtask repro-test`) and the fuzz harnesses' smoke tests; its first run on GitHub passed on 2026-10-27 ([run 40412790382](https://github.com/obstinix/Aegis/actions/runs/40412790382)). Live KVM and nested tests stay local (ADR-0010). |
-| `aegis-core` (lifecycle, memory map, exit model, backend interface, port + MMIO device bus, dispatch loop with a stop flag) | 🟡 Implemented; 41 tests on Windows and Linux, driven by a scripted mock backend. Used by the KVM backend; the bare-metal backend does not exist yet. |
-| `aegis-devices` (16550 UART, transmit-only; virtio-mmio transport, split virtqueue, virtio-console output and input) | 🟡 Implemented, `no_std`; 38 tests (mock memory and interrupt line), and driven by real KVM guests and Linux boots. Console output goes to a pluggable sink: a capped buffer by default, `aegis run`'s stream in practice. Console input reaches the guest once it has written to `/dev/hvc0` (see the roadmap's M6h limits). The virtqueue and virtio-mmio paths have fuzz harnesses ([`docs/fuzzing.md`](docs/fuzzing.md)). |
-| `aegis doctor` capability report | 🟢 Done (M1): tested live and with fixtures on Windows and WSL2, including KVM API version and extension queries. |
-| Hosted KVM backend (stage 1) | 🟡 M3, M4h and M6h done: `aegis run --config vm.toml` boots a Linux bzImage + initramfs to `/init` under KVM, with in-kernel irqchip/PIT, a UART console and a seccomp allowlist. With `vcpus = 2..8` the vCPUs are described in ACPI (MADT) and each runs on its own sandboxed thread; `virtio_console = true` adds a virtio-console over virtio-mmio, declared in the ACPI DSDT. `virtio_console_stdin = true` forwards `aegis run`'s stdin to the guest's `/dev/hvc0` (M6h). Guest console output is streamed to stdout while the guest runs: UART output as it is, hvc0 lines prefixed `hvc0| `. It is not an interactive console yet: there is no terminal raw mode and no Ctrl-C passthrough. Tested live in WSL2 with 1, 2, 4 and 8 vCPUs. Not yet tested on physical hardware: the M5h script and checklist are ready ([`docs/hardware-validation.md`](docs/hardware-validation.md)) but have not been run on the ThinkPad. |
-| Bare-metal UEFI core (`aegis-uefi`) and nested test harness | 🟡 B0 done: `cargo xtask uefi-test` boots the UEFI application under QEMU/KVM with OVMF, nested in WSL2. It passes when the app's serial marker appears and the VM powers itself off. The app does no virtualization yet. |
-| VMX / SVM capability checks  | ⚪ Not started  |
-| VMX operation (VMXON)        | ⚪ Not started  |
-| First guest (VMLAUNCH)       | ⚪ Not started  |
-| EPT / NPT memory isolation   | ⚪ Not started  |
-| Lunar Core integration       | ⚪ Not started  |
+| | Path | State today |
+|:-:|---|---|
+| ✅ | **Hosted** — Linux KVM + `rust-vmm` | Boots Linux `bzImage` + initramfs to `/init`, 2–8 vCPUs, UART + virtio‑console |
+| 🧪 | **UEFI application** | Boots under QEMU/KVM + OVMF (nested WSL2); runs no guest yet |
+| ⏳ | **Bare metal** — Intel VT‑x first | VMXON / VMCS / VMLAUNCH not implemented |
+| ⛔ | **Isolation** — EPT/NPT | Not implemented; no isolation claim is made |
 
-This table is the source of truth. A row only changes when the matching code and test land in `main`.
+## Overview
 
-## What Aegis is
+Aegis explores the virtualization boundary between hardware and guest execution. It is developed alongside **Lunar Core**, the Rust kernel planned for the from‑scratch track of PyxisOS.
 
-Aegis is the virtualization component of **PyxisOS Track B**, the from-scratch kernel and hypervisor track.
-It sits next to **Lunar Core** (the Rust kernel) and is responsible for one thing: running guest code
-under hardware-enforced isolation, with every VM entry, VM exit, and memory mapping under explicit control.
+The project deliberately separates two paths:
 
-Aegis is built in two stages ([ADR-0001](research/architecture-decision-record.md#adr-0001-staged-architecture)):
+- **Hosted backend** — uses Linux KVM and the Rust [`rust-vmm`](https://github.com/rust-vmm) ecosystem to exercise VM configuration, guest memory, device models, CPU topology, and guest boot while the core interfaces mature.
+- **Bare‑metal path** — a standalone UEFI application that will grow into a hardware‑assisted virtualization core, Intel VT‑x first, with AMD SVM considered once the first architecture is established.
 
-1. **Hosted:** a Linux KVM backend, built on the rust-vmm crates, so Aegis can run, test and manage real VMs early.
-2. **Bare metal:** a from-scratch VMX core, written directly against the processor manuals so every layer is
-   understood rather than inherited. It runs as a UEFI application and is developed alongside the hosted stage.
+Both paths share backend‑neutral concepts — VM lifecycle, vCPU state, guest‑memory maps, device buses, and exit dispatch — without making the eventual bare‑metal core a wrapper around KVM, Xen, or Hyper‑V.
 
-Both stages sit behind the same vCPU, guest-memory and exit-dispatch interfaces. The bare-metal core is
-not a wrapper around KVM, Xen, or Hyper-V.
+### What works now
+
+- **Backend‑neutral core** — VM lifecycle/state models, guest‑memory mapping abstractions, a backend trait, port‑I/O and MMIO device buses, and an exit‑dispatch loop.
+- **Hosted Linux/KVM boot** — a Linux `bzImage` with initramfs reaches `/init` in the tested environment.
+- **Multi‑vCPU guests** — 2, 4, and 8 vCPU configurations described through ACPI MADT, one host thread per vCPU.
+- **Console devices** — 16550 UART output and virtio‑console over virtio‑mmio (described in ACPI DSDT); optional stdin forwarding into the guest's `/dev/hvc0`.
+- **`aegis doctor`** — host virtualization capability report.
+- **UEFI test application** — boots under QEMU/KVM with OVMF in the nested WSL2 setup.
+- **Validation tooling** — workspace tests, fmt, Clippy, docs, `no_std`/UEFI build checks, `cargo deny`, CI, reproducible‑build checks, and fuzz‑harness smoke tests.
+
+These are development results, not evidence that the bare‑metal hypervisor or its isolation guarantees exist.
+
+## Current status
+
+Legend: ✅ implemented · 🧪 functional / experimental · ⏳ not yet done · 🗺️ planned
+
+| Area | Status | Notes |
+|---|:-:|---|
+| Workspace and toolchain | ✅ | Pinned Rust toolchain; fmt, Clippy, tests, docs, `no_std`/UEFI checks, and `cargo deny` are part of validation. |
+| CI | ✅ | GitHub Actions on Linux and Windows. Live KVM and nested‑virtualization tests remain environment‑dependent. |
+| `aegis-core` | ✅ | Lifecycle and memory‑map abstractions, exit model, device‑bus interfaces, dispatch loop, mock‑backend tests. Still evolving. |
+| `aegis-devices` | ✅ | `no_std` 16550 UART; virtio‑mmio, split virtqueue, and virtio‑console, with tests and fuzz harnesses. Still evolving. |
+| `aegis doctor` | ✅ | Reports host capabilities, including KVM API and extension info where available. |
+| Hosted Linux/KVM backend | 🧪 | Boots `bzImage` + initramfs to `/init`; 2–8 vCPU topology, UART, optional virtio‑console/stdin forwarding. |
+| UEFI test application | 🧪 | Boots under QEMU/KVM + OVMF in nested WSL2. Does **not** execute a guest via VMX/SVM. |
+| Physical‑hardware validation | ⏳ | Checklist exists; results get recorded after target hardware is tested. |
+| Intel VMX / first bare‑metal guest | ⏳ | VMXON, VMCS setup, VMLAUNCH/VMRESUME, and exit handling are future work. |
+| EPT/NPT isolation | ⏳ | No claim of bare‑metal guest‑memory isolation. |
+| AMD SVM | 🗺️ | Follows the first stable architecture path. |
+| Lunar Core integration | 🗺️ | Needs a defined, tested VM‑management interface. |
+
+> [!NOTE]
+> **Status rule:** a milestone moves to ✅ only when its implementation *and* matching validation are in the repository. See [`research/development-roadmap.md`](research/development-roadmap.md) and the hardware‑validation checklist under [`docs/`](docs/).
 
 ## Architecture
 
+### Intended system relationship
+
 ```text
-┌──────────────────────────────────────────────────┐
-│                PyxisOS (Track B)                 │
-│        Lunar Core kernel · system services       │
-├──────────────────────────────────────────────────┤
-│              VM management interface             │
-│        create · run · pause · destroy · IPC      │
-├──────────────────────────────────────────────────┤
-│                      AEGIS                       │
-│  ┌───────────────────┐  ┌─────────────────────┐  │
-│  │ vCPU + VMCS/VMCB  │  │  EPT / NPT memory   │  │
-│  ├───────────────────┤  ├─────────────────────┤  │
-│  │ VM-exit dispatch  │  │  Resource ownership │  │
-│  └───────────────────┘  └─────────────────────┘  │
-├──────────────────────────────────────────────────┤
-│          Arch layer (VT-x  |  AMD-V/SVM)         │
-├──────────────────────────────────────────────────┤
-│       Hardware: CPU · RAM · interrupts · I/O     │
-└──────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│                          PyxisOS                          │
+│              Lunar Core kernel and services               │
+├───────────────────────────────────────────────────────────┤
+│                 Future VM-management API                  │
+│             create · run · pause · destroy                │
+├───────────────────────────────────────────────────────────┤
+│                           AEGIS                           │
+│                                                           │
+│   Backend-neutral core        Device models and buses     │
+│   lifecycle · guest memory    UART · MMIO · virtqueues    │
+│   vCPU model · exit dispatch                              │
+│                                                           │
+├─────────────────────────────┬─────────────────────────────┤
+│       Hosted backend        │       Bare-metal path       │
+│         Linux KVM           │      UEFI → VMX / SVM       │
+│        (works today)        │       (in development)      │
+├─────────────────────────────┴─────────────────────────────┤
+│         CPU · RAM · interrupts · platform devices         │
+└───────────────────────────────────────────────────────────┘
 ```
 
-*Target design. None of these layers exist in code yet.*
+<sub>Target relationship, not a claim that every layer is implemented. The hosted KVM backend is the current route for running guests.</sub>
 
-| Component          | Responsibility                                                                 |
-| ------------------ | ------------------------------------------------------------------------------ |
-| Arch layer         | Vendor-specific instructions (VMXON/VMLAUNCH vs VMRUN) behind one interface.   |
-| vCPU               | Guest register state, control structures (VMCS on Intel, VMCB on AMD).         |
-| VM-exit dispatch   | Decode exit reasons and route them to handlers (CPUID, HLT, I/O, EPT faults).  |
-| EPT / NPT memory   | Second-level address translation: guest-physical → host-physical, per VM.      |
-| Resource ownership | Track which VM owns which pages and vCPUs; guarantee clean teardown.           |
-| Management API     | The narrow interface Lunar Core uses to create and control VMs.                |
-
-## How hardware virtualization works
-
-The core loop Aegis is built around, shown for Intel VT-x (AMD SVM follows the same shape with `VMRUN` and a VMCB):
+### Exit dispatch (conceptual)
 
 ```mermaid
-sequenceDiagram
-    participant H as Aegis (VMX root)
-    participant C as CPU
-    participant G as Guest (VMX non-root)
-    H->>C: Enable CR4.VMXE, VMXON
-    H->>C: VMCLEAR + VMPTRLD (select VMCS)
-    H->>C: VMWRITE host / guest / control fields
-    H->>C: VMLAUNCH
-    C->>G: Guest executes
-    G->>C: Sensitive instruction (e.g. CPUID)
-    C->>H: VM exit (exit reason 10)
-    H->>H: Emulate, advance guest RIP
-    H->>C: VMRESUME
-    C->>G: Guest continues
+flowchart LR
+    R["vCPU run<br/>(backend)"] --> E{"VM exit"}
+    E -->|port I/O| P["Port-I/O bus<br/>→ UART"]
+    E -->|MMIO| M["MMIO bus<br/>→ virtio-mmio"]
+    E -->|halt / shutdown| S["Lifecycle<br/>state change"]
+    E -->|unhandled| F["Fail closed<br/>report + stop"]
+    P --> R
+    M --> R
 ```
 
-Everything else (memory isolation, interrupts, devices) is built by deciding *which* events cause exits and *how* the host handles them.
+The same dispatch model is meant to serve both the KVM backend today and the VMX backend later, so device models never need to know which one is underneath.
 
-## Design principles
-
-- **Deny by default.** Guests get only the memory and exits Aegis explicitly configures.
-- **Verify every state transition.** Check VMX instruction status flags (CF/ZF) and VM-entry failure codes on every call; never assume success.
-- **Vendor code stays in the arch layer.** VT-x and SVM differences do not leak upward.
-- **Small trusted core.** Keep the code that runs in VMX root mode minimal and auditable.
-- **Honest status.** Docs describe what the code does, not what it will do.
-
-## Design decisions
-
-Recorded in [`research/architecture-decision-record.md`](research/architecture-decision-record.md). Research behind them is in [`research/`](research/).
-
-| Decision                    | Outcome                                                          |
-| --------------------------- | ---------------------------------------------------------------- |
-| Hosting model               | Staged: hosted KVM first, standalone bare-metal UEFI core in parallel (ADR-0001) |
-| First vendor target         | Intel VT-x first; AMD SVM after (ADR-0005)                        |
-| Language split              | Rust stable everywhere, with inline `asm!` for VMX; NASM only for test guests (ADR-0002) |
-| Guest memory strategy       | Explicit guest memory map; EPT built only from it, never identity-mapping host RAM (ADR-0006) |
-| First guest                 | Hand-written real-mode stub, then a Linux bzImage (ADR-0008, roadmap M2/M3) |
-| License                     | Apache-2.0 (ADR-0011, *proposed*: `LICENSE` file not yet added)  |
-
-## Roadmap
-
-Each phase has a concrete exit criterion. A box is ticked only when that criterion is demonstrated and the test is in the repo.
-
-The detailed milestone plan, including the hosted KVM track that comes first, is in
-[`research/development-roadmap.md`](research/development-roadmap.md). The phases below describe the bare-metal track.
-
-- [x] **Phase 0 · Foundations**
-  Repo layout, toolchain, CI, serial logging.
-  *Done when:* a bootable image builds reproducibly and prints to serial under QEMU.
-  *Status:* done 2026-10-27.
-  - The image boots and prints under QEMU, tested by `cargo xtask uefi-test` (roadmap B0). This test runs locally only, nested under KVM in WSL2, not in CI.
-  - It builds reproducibly, tested by `cargo xtask repro-test`: two clean builds must be byte-identical. That holds per host; Windows and Linux builds differ from each other.
-  - CI (`.github/workflows/ci.yml`) runs the checks and `repro-test` on Linux and Windows. Its first run on GitHub passed ([run 40412790382](https://github.com/obstinix/Aegis/actions/runs/40412790382)).
-
-- [ ] **Phase 1 · Capability detection**
-  Intel: `CPUID.1:ECX[5]` (VMX), `IA32_FEATURE_CONTROL` (MSR `0x3A`) lock/enable bits, `IA32_VMX_BASIC` (MSR `0x480`).
-  AMD: `CPUID.8000_0001h:ECX[2]` (SVM), `VM_CR.SVMDIS` (MSR `0xC0010114`).
-  *Done when:* Aegis reports support correctly on both a VMX-capable and a non-capable configuration.
-
-- [ ] **Phase 2 · Enter VMX operation**
-  Set `CR4.VMXE`, allocate the VMXON region with the correct revision ID, execute `VMXON` / `VMXOFF`.
-  *Done when:* VMX root operation is entered and exited cleanly, with status checked and logged.
-
-- [ ] **Phase 3 · First guest**
-  Configure a VMCS and `VMLAUNCH` a tiny guest stub.
-  *Done when:* the guest executes `CPUID` and `HLT`, and the host logs exit reasons 10 and 12 and resumes or stops it correctly.
-
-- [ ] **Phase 4 · Memory virtualization**
-  EPT page tables for guest-physical memory; handle EPT violations (exit reason 48).
-  *Done when:* a guest access outside its mapped memory traps to Aegis instead of touching host memory.
-
-- [ ] **Phase 5 · Lifecycle & resources**
-  Create / run / pause / destroy; multiple VMs; virtual interrupt injection.
-  *Done when:* VMs can be created and destroyed repeatedly with no leaked pages, verified by an ownership audit.
-
-- [ ] **Phase 6 · Lunar Core integration**
-  Management interface between the kernel and Aegis.
-  *Done when:* Lunar Core starts and stops a guest through the API in an end-to-end test.
-
-AMD SVM support follows the same phases once the arch layer is stable on the first vendor.
-
-## Development environment
-
-Common commands, from the repository root:
-
-```text
-cargo test --workspace                          # unit and mock tests (any host)
-cargo test --workspace -- --include-ignored     # plus live KVM tests (Linux with /dev/kvm)
-cargo xtask uefi-test                           # boot aegis-uefi under QEMU/KVM + OVMF (Linux; here, WSL2)
-cargo run -p aegis-cli -- doctor                # what this host can run
-cargo run -p aegis-cli -- run --config vm.toml  # boot a Linux guest under KVM (Linux)
-```
-
-| Tool                     | Purpose                                                            |
-| ------------------------ | ------------------------------------------------------------------ |
-| Rust (stable, pinned)    | All Aegis code; `no_std` for the core and the bare-metal track     |
-| NASM                     | Tiny test-guest images                                             |
-| QEMU + KVM               | Fast testing; needs nested virtualization and `-cpu host` to expose VMX to the guest |
-| Bochs (VMX-enabled build)| Slow but fully inspectable VMX emulation for debugging VMCS state  |
-| GDB                      | Attach via QEMU `-s -S`                                            |
-
-**WSL2 note:** testing a hypervisor inside QEMU requires nested virtualization to be enabled for the
-WSL2 VM, and `/dev/kvm` to be available inside WSL. Your WSL user must also be in the `kvm` group:
-`/dev/kvm` is `root:kvm 660`. Without it, fall back to Bochs.
-
-### Layout
-
-From [ADR-0003](research/architecture-decision-record.md#adr-0003-workspace-layout-and-crate-boundaries); all of these exist now:
+### Workspace
 
 ```text
 Aegis/
-├── crates/
-│   ├── aegis-core/     # no_std: VM config, lifecycle, exit model, guest memory map
-│   ├── aegis-probe/    # capability detection (CPUID, /dev/kvm, nested params)
-│   ├── aegis-kvm/      # hosted backend (Linux KVM, rust-vmm)
-│   ├── aegis-uefi/     # bare-metal VMX core (UEFI application)
-│   ├── aegis-devices/  # backend-neutral device models (16550 UART first)
-│   └── aegis-cli/      # `aegis` binary: doctor, run, version
-├── xtask/              # build and QEMU test orchestration
-├── tests/guests/       # NASM test-guest sources
-├── research/           # research reports and ADRs
-└── docs/
+├── crates/                 # (layout per Cargo.toml — manifests are authoritative)
+│   ├── aegis-core/         # lifecycle, guest memory, exit model, dispatch
+│   ├── aegis-devices/      # UART, virtio-mmio, virtqueues, virtio-console
+│   ├── aegis-kvm/          # hosted Linux/KVM backend
+│   ├── aegis-probe/        # host capability discovery
+│   ├── aegis-uefi/         # UEFI application for the bare-metal path
+│   └── aegis-cli/          # the `aegis` command
+├── xtask/                  # build, reproducibility, QEMU test orchestration
+├── tests/guests/           # small NASM guest programs and assets
+├── research/               # ADRs, technical research, milestone planning
+└── docs/                   # operations, fuzzing, hardware validation
 ```
+
+| Component | Responsibility |
+|---|---|
+| `aegis-core` | Backend‑neutral VM lifecycle, guest‑memory abstractions, exit model, dispatch interfaces. |
+| `aegis-probe` | Host capability and virtualization‑environment discovery. |
+| `aegis-kvm` | Hosted Linux/KVM execution backend. |
+| `aegis-uefi` | Standalone UEFI application for developing the bare‑metal path. Does not yet virtualize a guest. |
+| `aegis-devices` | Backend‑neutral device models and transport components. |
+| `aegis-cli` | The `aegis` CLI: capability checks and hosted guest execution. |
+
+### Design principles
+
+- **Explicit boundaries** — guest memory, device access, and backend behavior live behind narrow interfaces.
+- **Fail closed where practical** — validate configuration and state transitions instead of assuming hardware or backend calls succeeded.
+- **Mechanism ≠ architecture** — no KVM‑specific details leak into backend‑neutral interfaces.
+- **Small privileged core** — minimize the code that will eventually run in a privileged virtualization mode.
+- **Test the boundary** — mock backends for deterministic tests; live guest tests where the host supports them.
+- **Evidence over aspiration** — planned capabilities are never described as implemented security features.
+
+## Quick start
+
+### Requirements
+
+| To do this… | You need |
+|---|---|
+| Build and run unit/mock tests | Rust toolchain from `rust-toolchain.toml`, Git, native build tools |
+| Assemble test guests | NASM |
+| Run a hosted guest | Linux with `/dev/kvm` accessible to your user (WSL2 works) |
+| Run the UEFI boot test | QEMU, KVM, OVMF — plus nested virtualization if inside WSL2 |
+
+Windows is fine for workspace development and cross‑platform checks; the live KVM path needs Linux (exercised here through WSL2).
+
+### Clone and validate
+
+```bash
+git clone https://github.com/obstinix/Aegis.git
+cd Aegis
+
+rustup show                                   # installs the pinned toolchain
+cargo fmt --all -- --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo doc --workspace --no-deps
+cargo deny check
+```
+
+Extra workflows via the task runner:
+
+```bash
+cargo xtask repro-test    # reproducible-build check
+cargo xtask uefi-test     # UEFI/QEMU boot test (Linux/KVM + QEMU + OVMF)
+```
+
+`uefi-test` is environment‑dependent and is not a substitute for physical‑hardware validation.
+
+### Check host capabilities
+
+```bash
+cargo run -p aegis-cli -- doctor
+```
+
+This reports what the host exposes. A clean report does not mean the VMX/SVM path is implemented.
+
+### Run a hosted Linux guest
+
+```bash
+cargo run -p aegis-cli -- run --config vm.toml
+```
+
+The config must point to a compatible Linux kernel image and initramfs. See the repository examples and the roadmap for the current schema. This runs the **hosted KVM backend** — it does not boot the UEFI application as a hypervisor.
+
+<details>
+<summary><b>Console and device notes</b></summary>
+
+<br>
+
+- **UART** — the 16550 model is transmit‑only for now.
+- **virtio‑console** — exposed over virtio‑mmio and described in ACPI DSDT. Guest output streams to the host process; `hvc0` output is prefixed to distinguish it from UART output.
+- **Guest input** — with `virtio_console_stdin = true`, host stdin is forwarded to the guest console. The guest needs the console driver and must read from `/dev/hvc0`.
+- **Not a full terminal yet** — raw mode, reliable Ctrl‑C passthrough, and a complete interactive console are not claimed.
+- **Fuzzing** — virtio‑mmio and virtqueue paths have fuzz harnesses; see [`docs/fuzzing.md`](docs/fuzzing.md).
+
+</details>
+
+## Development and validation
+
+| Command | What it checks | Needs live KVM? |
+|---|---|:-:|
+| `cargo test --workspace` | Unit and mock‑backend tests | No |
+| `cargo fmt --all -- --check` | Formatting | No |
+| `cargo clippy --workspace --all-targets -- -D warnings` | Lints | No |
+| `cargo doc --workspace --no-deps` | API docs build | No |
+| `cargo deny check` | Dependency / license policy | No |
+| `cargo xtask repro-test` | Reproducible build | No |
+| `cargo xtask uefi-test` | UEFI app boots under QEMU + OVMF | Yes (nested in WSL2) |
+| `cargo run -p aegis-cli -- doctor` | Host capability report | Partially |
+| `cargo run -p aegis-cli -- run --config vm.toml` | Hosted guest boot | Yes |
+
+> [!IMPORTANT]
+> Some tests are `#[ignore]`d or require live KVM. A green `cargo test --workspace` does **not** mean live guest boot, nested virtualization, or hardware validation ran. Check the test output and the CI workflow for exact coverage.
+
+<details>
+<summary><b>WSL2 notes</b></summary>
+
+<br>
+
+- Confirm `/dev/kvm` exists and your user can access it (`ls -l /dev/kvm`; add yourself to the `kvm` group if needed).
+- Nested virtualization must be exposed by both the Windows host and the WSL2 environment for nested QEMU/KVM tests.
+- No KVM? Run the portable unit and mock tests — just don't read their success as a live‑virtualization result.
+- Keep live KVM and nested results separate from generic cross‑platform CI claims.
+
+</details>
+
+## Roadmap
+
+Detailed milestones live in [`research/development-roadmap.md`](research/development-roadmap.md). A box is ticked only when implementation and validation are both in the repo.
+
+**Stage 1 — Foundations**
+- [x] Rust workspace, CI, validation commands, reproducible‑build check
+- [x] Backend‑neutral core interfaces with mock‑backed tests
+
+**Stage 2 — Hosted path**
+- [x] Hosted KVM backend boots a Linux guest in the tested environment
+- [x] ACPI multi‑vCPU topology and virtio‑console
+- [x] UEFI test application boots under QEMU/KVM + OVMF (nested)
+
+**Stage 3 — Bare‑metal bring‑up (Intel VT‑x)**
+- [ ] Complete and record physical‑hardware validation
+- [ ] VMX capability checks, implemented and validated
+- [ ] Enter VMX operation safely, verifying every instruction outcome
+- [ ] Launch a minimal bare‑metal guest and handle its first VM exits
+
+**Stage 4 — Isolation and lifecycle**
+- [ ] EPT‑backed guest‑memory translation with validated isolation behavior
+- [ ] VM lifecycle and resource ownership, including teardown
+
+**Stage 5 — Expansion and integration**
+- [ ] Evaluate AMD SVM support
+- [ ] Integrate with Lunar Core through a narrow, testable management interface
+
+## Research and design records
+
+Architectural decisions are recorded in [`research/architecture-decision-record.md`](research/architecture-decision-record.md), with supporting material under [`research/`](research/). Topics include:
+
+- Staged hosted and bare‑metal development
+- Rust boundaries and the limited use of assembly
+- Explicit guest‑memory ownership
+- Initial guest selection and test strategy
+- Workspace and crate responsibilities
+
+When changing low‑level virtualization behavior, cite the relevant Intel SDM or AMD APM section in code comments, tests, or the design record.
 
 ## Contributing
 
-Aegis is currently a solo learning-driven project, but issues and discussion are welcome.
+Aegis is a solo, research‑driven project. Issues and constructive technical discussion are welcome.
 
-1. Read the [status table](#status) and open design decisions first.
-2. Use [Conventional Commits](https://www.conventionalcommits.org/) (`feat(vmx): …`, `fix(ept): …`, `docs: …`).
-3. Every change that affects behavior needs a reproducible test or validation steps.
-4. Cite the manual section (Intel SDM / AMD APM) for any architectural behavior you rely on.
+1. Read the [status table](#current-status) and relevant ADRs before proposing a change.
+2. Keep changes focused; use [Conventional Commits](https://www.conventionalcommits.org/) (e.g. `feat(vmx): add capability probe`, `docs: clarify KVM test requirements`).
+3. Include deterministic tests where possible, and explicit validation steps for environment‑dependent behavior.
+4. Don't claim hardware support, guest isolation, or security properties without reproducible evidence.
+5. For architectural behavior, reference the relevant processor‑manual section.
 
-## Non-goals and security
+## Security scope and non‑goals
 
-- Aegis is a research and learning hypervisor, **not** a production isolation boundary.
-- No compatibility with existing VM image formats or management tools is planned.
-- Security properties will be claimed only after they are implemented, tested, and documented.
-  Until then, treat every guest as able to reach the host.
+Aegis is a learning and systems‑research project, not production virtualization software. It is not yet a standalone bare‑metal hypervisor and must not be used as a security boundary.
+
+- No claim of complete guest‑to‑host isolation is made.
+- EPT/NPT‑backed isolation on the bare‑metal path is future work.
+- Physical‑hardware validation and independent security review are outstanding.
+- Hosted KVM behavior depends on the Linux host kernel and KVM.
+- A passing unit test or CI run does not establish security, correctness on all CPUs, or production readiness.
+
+**Reporting:** please report suspected vulnerabilities privately through [GitHub's private vulnerability reporting](https://github.com/obstinix/Aegis/security) rather than publishing exploit details before a fix can be coordinated.
 
 ## References
 
-- Intel® 64 and IA-32 Architectures Software Developer's Manual, **Volume 3C** (VMX chapters)
-- AMD64 Architecture Programmer's Manual, **Volume 2**, Chapter 15: Secure Virtual Machine
-- *Hypervisor From Scratch* tutorial series (Sina Karvandi)
-- SimpleVisor (Alex Ionescu): a minimal VT-x hypervisor worth reading end to end
-- Bochs source: a readable software implementation of VMX
+- Intel — *Intel® 64 and IA‑32 Architectures Software Developer's Manual*, Vol. 3 (system programming, VMX)
+- AMD — *AMD64 Architecture Programmer's Manual*, Vol. 2 (system programming, SVM)
+- [rust-vmm](https://github.com/rust-vmm) — Rust components for building VMMs
+- [QEMU](https://www.qemu.org/) — machine emulation and virtualization testing
+- [OVMF / EDK II](https://github.com/tianocore/edk2) — UEFI firmware for virtual machines
+- [Bochs](https://bochs.sourceforge.io/) — x86 emulator for low‑level debugging
 
 ## License
 
-Licensed under the [Apache License 2.0](LICENSE), consistent with the rest of the PyxisOS ecosystem.
+Licensed under the [Apache License 2.0](LICENSE). The checked‑in `LICENSE` file is the source of truth.
 
 ---
 
 <div align="center">
 
-**AEGIS** · *the boundary between hardware and execution*
+**AEGIS** · the boundary between hardware and execution
 
-Part of [PyxisOS](https://github.com/obstinix/PyxisOS) · built in the open by [obstinix](https://github.com/obstinix)
+<sub>Part of <a href="https://github.com/obstinix/PyxisOS">PyxisOS</a> · built in the open by <a href="https://github.com/obstinix">obstinix</a></sub>
 
 </div>
